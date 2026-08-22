@@ -1,12 +1,17 @@
 import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
 import {
+  Bar,
+  BarChart,
+  CartesianGrid,
   Cell,
   Legend,
   Pie,
   PieChart,
   ResponsiveContainer,
   Tooltip,
+  XAxis,
+  YAxis,
 } from "recharts";
 import "./App.css";
 
@@ -116,6 +121,36 @@ function App() {
     "#f59e0b",
     "#818cf8",
   ];
+
+  const monthlySpending = transactions
+  .filter((transaction) => transaction.transaction_type === "expense")
+  .reduce<Record<string, number>>((totals, transaction) => {
+    const month = transaction.transaction_date.slice(0, 7);
+
+    totals[month] =
+      (totals[month] || 0) + transaction.amount;
+
+    return totals;
+  }, {});
+
+const monthlyChartData = Object.entries(monthlySpending)
+  .sort(([monthA], [monthB]) => monthA.localeCompare(monthB))
+  .map(([month, amount]) => {
+  const [year, monthNumber] = month.split("-");
+
+  const monthLabel = new Date(
+    Number(year),
+    Number(monthNumber) - 1
+  ).toLocaleDateString("en-US", {
+    month: "short",
+    year: "numeric",
+  });
+
+  return {
+    month: monthLabel,
+    amount,
+  };
+});
 
   async function loadTransactions() {
     try {
@@ -526,6 +561,50 @@ function App() {
             </div>
           )}
         </section>
+
+        <section className="content-card">
+  <div className="section-heading">
+    <div>
+      <p className="eyebrow">MONTHLY TREND</p>
+      <h2>Monthly Spending</h2>
+    </div>
+  </div>
+
+  {monthlyChartData.length === 0 ? (
+    <div className="empty-state">
+      <h3>No monthly spending data yet</h3>
+      <p>
+        Add expense transactions from different months to see your
+        spending trend.
+      </p>
+    </div>
+  ) : (
+    <div className="chart-card">
+      <ResponsiveContainer width="100%" height={320}>
+        <BarChart data={monthlyChartData}>
+          <CartesianGrid strokeDasharray="3 3" />
+
+          <XAxis dataKey="month" />
+
+          <YAxis />
+
+          <Tooltip
+            formatter={(value) => [
+              `$${Number(value).toFixed(2)}`,
+              "Spending",
+            ]}
+          />
+
+          <Bar
+            dataKey="amount"
+            fill="#60a5fa"
+            radius={[6, 6, 0, 0]}
+          />
+        </BarChart>
+      </ResponsiveContainer>
+    </div>
+  )}
+</section>
 
         <section className="content-card">
           <div className="section-heading">

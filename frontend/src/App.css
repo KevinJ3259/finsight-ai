@@ -383,3 +383,34 @@ button {
     min-height: 40px;
   }
 }
+
+/* AI Financial Insights */
+
+.ai-markdown {
+  margin-top: 18px;
+  line-height: 1.65;
+}
+
+.ai-markdown h3 {
+  margin-top: 24px;
+  margin-bottom: 12px;
+  font-size: 1.15rem;
+}
+
+.ai-markdown p {
+  margin: 10px 0;
+}
+
+.ai-markdown ul,
+.ai-markdown ol {
+  margin: 10px 0 18px;
+  padding-left: 28px;
+}
+
+.ai-markdown li {
+  margin-bottom: 6px;
+}
+
+.ai-markdown strong {
+  font-weight: 700;
+}

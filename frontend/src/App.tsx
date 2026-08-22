@@ -34,6 +34,7 @@ function App() {
   const [form, setForm] = useState<TransactionForm>(emptyForm);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [editingId, setEditingId] = useState<number | null>(null);
 
   const totalIncome = transactions
     .filter((transaction) => transaction.transaction_type === "income")
@@ -55,7 +56,7 @@ function App() {
         throw new Error("Unable to load transactions.");
       }
 
-      const data = await response.json();
+      const data: Transaction[] = await response.json();
       setTransactions(data);
     } catch (err) {
       setError(
@@ -91,40 +92,46 @@ function App() {
     setLoading(true);
 
     try {
-      const response = await fetch(
-        "http://127.0.0.1:8000/transactions",
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            description: form.description,
-            amount,
-            category: form.category,
-            transaction_type: form.transaction_type,
-            transaction_date: form.transaction_date,
-          }),
-        }
-      );
+      const url =
+        editingId !== null
+          ? `http://127.0.0.1:8000/transactions/${editingId}`
+          : "http://127.0.0.1:8000/transactions";
+
+      const response = await fetch(url, {
+        method: editingId !== null ? "PUT" : "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          description: form.description,
+          amount,
+          category: form.category,
+          transaction_type: form.transaction_type,
+          transaction_date: form.transaction_date,
+        }),
+      });
 
       if (!response.ok) {
-        throw new Error("Unable to create transaction.");
+        throw new Error(
+          editingId !== null
+            ? "Unable to update transaction."
+            : "Unable to create transaction."
+        );
       }
 
       setForm({
         ...emptyForm,
-        transaction_date: new Date()
-          .toISOString()
-          .split("T")[0],
+        transaction_date: new Date().toISOString().split("T")[0],
       });
+
+      setEditingId(null);
 
       await loadTransactions();
     } catch (err) {
       setError(
         err instanceof Error
           ? err.message
-          : "Unable to create transaction."
+          : "Unable to save transaction."
       );
     } finally {
       setLoading(false);
@@ -154,6 +161,10 @@ function App() {
         throw new Error("Unable to delete transaction.");
       }
 
+      if (editingId === id) {
+        cancelEdit();
+      }
+
       await loadTransactions();
     } catch (err) {
       setError(
@@ -164,19 +175,44 @@ function App() {
     }
   }
 
+  function startEdit(transaction: Transaction) {
+    setEditingId(transaction.id);
+
+    setForm({
+      description: transaction.description,
+      amount: transaction.amount.toString(),
+      category: transaction.category,
+      transaction_type: transaction.transaction_type,
+      transaction_date: transaction.transaction_date,
+    });
+
+    window.scrollTo({
+      top: 0,
+      behavior: "smooth",
+    });
+  }
+
+  function cancelEdit() {
+    setEditingId(null);
+
+    setForm({
+      ...emptyForm,
+      transaction_date: new Date().toISOString().split("T")[0],
+    });
+
+    setError("");
+  }
+
   return (
     <div className="app">
       <header className="header">
         <div>
-          <p className="eyebrow">
-            PERSONAL FINANCE TRACKER
-          </p>
+          <p className="eyebrow">PERSONAL FINANCE TRACKER</p>
 
           <h1>FinSight AI</h1>
 
           <p className="subtitle">
-            Understand your money. Make smarter financial
-            decisions.
+            Understand your money. Make smarter financial decisions.
           </p>
         </div>
       </header>
@@ -203,10 +239,16 @@ function App() {
           <div className="section-heading">
             <div>
               <p className="eyebrow">
-                NEW TRANSACTION
+                {editingId !== null
+                  ? "EDIT TRANSACTION"
+                  : "NEW TRANSACTION"}
               </p>
 
-              <h2>Add Income or Expense</h2>
+              <h2>
+                {editingId !== null
+                  ? "Update Transaction"
+                  : "Add Income or Expense"}
+              </h2>
             </div>
           </div>
 
@@ -285,13 +327,8 @@ function App() {
                   })
                 }
               >
-                <option value="expense">
-                  Expense
-                </option>
-
-                <option value="income">
-                  Income
-                </option>
+                <option value="expense">Expense</option>
+                <option value="income">Income</option>
               </select>
             </div>
 
@@ -307,28 +344,39 @@ function App() {
                 onChange={(event) =>
                   setForm({
                     ...form,
-                    transaction_date:
-                      event.target.value,
+                    transaction_date: event.target.value,
                   })
                 }
               />
             </div>
 
-            <button
-              type="submit"
-              className="add-button"
-              disabled={loading}
-            >
-              {loading
-                ? "Adding..."
-                : "Add Transaction"}
-            </button>
+            <div className="form-actions">
+              <button
+                type="submit"
+                className="add-button"
+                disabled={loading}
+              >
+                {loading
+                  ? "Saving..."
+                  : editingId !== null
+                    ? "Update Transaction"
+                    : "Add Transaction"}
+              </button>
+
+              {editingId !== null && (
+                <button
+                  type="button"
+                  className="cancel-button"
+                  onClick={cancelEdit}
+                >
+                  Cancel
+                </button>
+              )}
+            </div>
           </form>
 
           {error && (
-            <p className="error-message">
-              {error}
-            </p>
+            <p className="error-message">{error}</p>
           )}
         </section>
 
@@ -345,8 +393,8 @@ function App() {
               <h3>No transactions yet</h3>
 
               <p>
-                Your income and expenses will appear
-                here once you add them.
+                Your income and expenses will appear here once
+                you add them.
               </p>
             </div>
           ) : (
@@ -378,11 +426,19 @@ function App() {
 
                     <button
                       type="button"
+                      className="edit-button"
+                      onClick={() =>
+                        startEdit(transaction)
+                      }
+                    >
+                      Edit
+                    </button>
+
+                    <button
+                      type="button"
                       className="delete-button"
                       onClick={() =>
-                        deleteTransaction(
-                          transaction.id
-                        )
+                        deleteTransaction(transaction.id)
                       }
                     >
                       Delete

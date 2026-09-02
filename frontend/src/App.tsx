@@ -165,6 +165,7 @@ const expenseCategories = [
   "Groceries",
   "Dining",
   "Gas",
+  "Car Payment",
   "Vehicle Maintenance",
   "Utilities",
   "Internet",

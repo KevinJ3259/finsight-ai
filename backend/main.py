@@ -481,3 +481,73 @@ def get_cash_flow_forecast(
             recurring_transactions
         ),
     }
+
+@app.put(
+    "/budgets/{budget_id}",
+    response_model=Budget,
+)
+def update_budget(
+    budget_id: int,
+    budget: BudgetCreate,
+    db: Session = Depends(get_db),
+):
+    existing_budget = (
+        db.query(BudgetModel)
+        .filter(BudgetModel.id == budget_id)
+        .first()
+    )
+
+    if existing_budget is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Budget not found",
+        )
+
+    duplicate_budget = (
+        db.query(BudgetModel)
+        .filter(
+            BudgetModel.category == budget.category,
+            BudgetModel.id != budget_id,
+        )
+        .first()
+    )
+
+    if duplicate_budget is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="A budget already exists for this category",
+        )
+
+    existing_budget.category = budget.category
+    existing_budget.monthly_limit = budget.monthly_limit
+
+    db.commit()
+    db.refresh(existing_budget)
+
+    return existing_budget
+
+
+@app.delete("/budgets/{budget_id}")
+def delete_budget(
+    budget_id: int,
+    db: Session = Depends(get_db),
+):
+    budget = (
+        db.query(BudgetModel)
+        .filter(BudgetModel.id == budget_id)
+        .first()
+    )
+
+    if budget is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Budget not found",
+        )
+
+    db.delete(budget)
+    db.commit()
+
+    return {
+        "message": "Budget deleted successfully",
+        "id": budget_id,
+    }

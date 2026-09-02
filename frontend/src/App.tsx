@@ -69,6 +69,17 @@ interface CashFlowForecast {
   active_recurring_transactions: number;
 }
 
+interface Budget {
+  id: number;
+  category: string;
+  monthly_limit: number;
+}
+
+interface BudgetForm {
+  category: string;
+  monthly_limit: string;
+}
+
 const emptyForm: TransactionForm = {
   description: "",
   amount: "",
@@ -84,6 +95,11 @@ const emptyRecurringForm: RecurringTransactionForm = {
   transaction_type: "expense",
   frequency: "monthly",
   next_due_date: new Date().toISOString().split("T")[0],
+};
+
+const emptyBudgetForm: BudgetForm = {
+  category: "",
+  monthly_limit: "",
 };
 
 const expenseCategories = [
@@ -139,6 +155,11 @@ function App() {
   const [recurringLoading, setRecurringLoading] = useState(false);
   const [recurringError, setRecurringError] = useState("");
   const [forecast, setForecast] = useState<CashFlowForecast | null>(null);
+  const [budgets, setBudgets] = useState<Budget[]>([]);
+  const [budgetForm, setBudgetForm] = useState<BudgetForm>(emptyBudgetForm);
+  const [budgetEditingId, setBudgetEditingId] = useState<number | null>(null);
+  const [budgetLoading, setBudgetLoading] = useState(false);
+  const [budgetError, setBudgetError] = useState("");
 
   const totalIncome = transactions
     .filter((transaction) => transaction.transaction_type === "income")
@@ -149,6 +170,19 @@ function App() {
     .reduce((total, transaction) => total + transaction.amount, 0);
 
   const balance = totalIncome - totalExpenses;
+
+  const currentMonth = new Date().toISOString().slice(0, 7);
+  const currentMonthSpending = transactions
+    .filter(
+      (transaction) =>
+        transaction.transaction_type === "expense" &&
+        transaction.transaction_date.startsWith(currentMonth),
+    )
+    .reduce<Record<string, number>>((totals, transaction) => {
+      totals[transaction.category] =
+        (totals[transaction.category] || 0) + transaction.amount;
+      return totals;
+    }, {});
 
   const spendingByCategory = transactions
     .filter((transaction) => transaction.transaction_type === "expense")
@@ -263,11 +297,120 @@ function App() {
     }
   }
 
+  async function loadBudgets() {
+    try {
+      const response = await fetch("http://127.0.0.1:8000/budgets");
+
+      if (!response.ok) {
+        throw new Error("Unable to load budgets.");
+      }
+
+      const data: Budget[] = await response.json();
+      setBudgets(data);
+    } catch (err) {
+      setBudgetError(
+        err instanceof Error ? err.message : "Unable to load budgets.",
+      );
+    }
+  }
+
   useEffect(() => {
     loadTransactions();
     loadRecurringTransactions();
     loadForecast();
+    loadBudgets();
   }, []);
+
+  async function saveBudget(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setBudgetError("");
+
+    if (!budgetForm.category || !budgetForm.monthly_limit) {
+      setBudgetError("Choose a category and enter a monthly limit.");
+      return;
+    }
+
+    const monthlyLimit = Number(budgetForm.monthly_limit);
+
+    if (Number.isNaN(monthlyLimit) || monthlyLimit <= 0) {
+      setBudgetError("Monthly limit must be greater than zero.");
+      return;
+    }
+
+    setBudgetLoading(true);
+
+    try {
+      const url =
+        budgetEditingId === null
+          ? "http://127.0.0.1:8000/budgets"
+          : `http://127.0.0.1:8000/budgets/${budgetEditingId}`;
+      const response = await fetch(url, {
+        method: budgetEditingId === null ? "POST" : "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          category: budgetForm.category,
+          monthly_limit: monthlyLimit,
+        }),
+      });
+
+      if (!response.ok) {
+        const data = await response.json().catch(() => null);
+        throw new Error(data?.detail || "Unable to save budget.");
+      }
+
+      setBudgetForm(emptyBudgetForm);
+      setBudgetEditingId(null);
+      await loadBudgets();
+    } catch (err) {
+      setBudgetError(
+        err instanceof Error ? err.message : "Unable to save budget.",
+      );
+    } finally {
+      setBudgetLoading(false);
+    }
+  }
+
+  function startBudgetEdit(budget: Budget) {
+    setBudgetEditingId(budget.id);
+    setBudgetForm({
+      category: budget.category,
+      monthly_limit: budget.monthly_limit.toString(),
+    });
+    setBudgetError("");
+  }
+
+  function cancelBudgetEdit() {
+    setBudgetEditingId(null);
+    setBudgetForm(emptyBudgetForm);
+    setBudgetError("");
+  }
+
+  async function deleteBudget(id: number) {
+    if (!window.confirm("Delete this budget?")) {
+      return;
+    }
+
+    setBudgetError("");
+
+    try {
+      const response = await fetch(`http://127.0.0.1:8000/budgets/${id}`, {
+        method: "DELETE",
+      });
+
+      if (!response.ok) {
+        throw new Error("Unable to delete budget.");
+      }
+
+      if (budgetEditingId === id) {
+        cancelBudgetEdit();
+      }
+      await loadBudgets();
+    } catch (err) {
+      setBudgetError(
+        err instanceof Error ? err.message : "Unable to delete budget.",
+      );
+    }
+  }
 
   async function addRecurringTransaction(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -864,6 +1007,166 @@ function App() {
                   </div>
                 </div>
               ))}
+            </div>
+          )}
+        </section>
+
+        <section className="content-card">
+          <div className="section-heading">
+            <div>
+              <p className="eyebrow">MONTHLY BUDGETS</p>
+              <h2>Set Limits and Monitor Spending</h2>
+            </div>
+          </div>
+
+          <form className="transaction-form" onSubmit={saveBudget}>
+            <div className="form-group">
+              <label htmlFor="budget-category">Category</label>
+              <select
+                id="budget-category"
+                value={budgetForm.category}
+                onChange={(event) =>
+                  setBudgetForm({
+                    ...budgetForm,
+                    category: event.target.value,
+                  })
+                }
+              >
+                <option value="">Select a category</option>
+                {expenseCategories.map((category) => (
+                  <option key={category} value={category}>
+                    {category}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="form-group">
+              <label htmlFor="budget-limit">Monthly Limit</label>
+              <input
+                id="budget-limit"
+                type="number"
+                min="0"
+                step="0.01"
+                value={budgetForm.monthly_limit}
+                onChange={(event) =>
+                  setBudgetForm({
+                    ...budgetForm,
+                    monthly_limit: event.target.value,
+                  })
+                }
+                placeholder="Example: 500.00"
+              />
+            </div>
+
+            <div className="form-actions">
+              <button
+                type="submit"
+                className="add-button"
+                disabled={budgetLoading}
+              >
+                {budgetLoading
+                  ? "Saving..."
+                  : budgetEditingId === null
+                    ? "Add Budget"
+                    : "Update Budget"}
+              </button>
+
+              {budgetEditingId !== null && (
+                <button
+                  type="button"
+                  className="cancel-button"
+                  onClick={cancelBudgetEdit}
+                >
+                  Cancel
+                </button>
+              )}
+            </div>
+          </form>
+
+          {budgetError && <p className="error-message">{budgetError}</p>}
+
+          {budgets.length === 0 ? (
+            <div className="empty-state">
+              <h3>No monthly budgets yet</h3>
+              <p>Add a spending limit to monitor a category this month.</p>
+            </div>
+          ) : (
+            <div className="transaction-list">
+              {budgets.map((budget) => {
+                const spent = currentMonthSpending[budget.category] || 0;
+                const remaining = budget.monthly_limit - spent;
+                const percentage =
+                  budget.monthly_limit > 0
+                    ? (spent / budget.monthly_limit) * 100
+                    : 0;
+                const progressWidth = Math.min(percentage, 100);
+                const status =
+                  percentage >= 100
+                    ? "Over budget"
+                    : percentage >= 80
+                      ? "Approaching limit"
+                      : "On track";
+                const statusColor =
+                  percentage >= 100
+                    ? "#f87171"
+                    : percentage >= 80
+                      ? "#fbbf24"
+                      : "#34d399";
+
+                return (
+                  <div className="transaction" key={budget.id}>
+                    <div style={{ flex: 1 }}>
+                      <strong>{budget.category}</strong>
+                      <p>
+                        ${spent.toFixed(2)} spent of $
+                        {budget.monthly_limit.toFixed(2)} •{" "}
+                        {remaining >= 0 ? "$" : "-$"}
+                        {Math.abs(remaining).toFixed(2)}{" "}
+                        {remaining >= 0 ? "remaining" : "over"}
+                      </p>
+                      <div
+                        style={{
+                          height: "10px",
+                          marginTop: "10px",
+                          overflow: "hidden",
+                          borderRadius: "999px",
+                          background: "#1e293b",
+                        }}
+                      >
+                        <div
+                          style={{
+                            width: `${progressWidth}%`,
+                            height: "100%",
+                            borderRadius: "999px",
+                            background: statusColor,
+                          }}
+                        />
+                      </div>
+                      <p style={{ color: statusColor, marginTop: "8px" }}>
+                        {status} • {percentage.toFixed(0)}%
+                      </p>
+                    </div>
+
+                    <div className="transaction-actions">
+                      <button
+                        type="button"
+                        className="edit-button"
+                        onClick={() => startBudgetEdit(budget)}
+                      >
+                        Edit
+                      </button>
+                      <button
+                        type="button"
+                        className="delete-button"
+                        onClick={() => deleteBudget(budget.id)}
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           )}
         </section>

@@ -15,6 +15,10 @@ from backend.models import (
     RecurringTransaction,
     RecurringTransactionCreate,
     RecurringTransactionModel,
+    SavingsContribution,
+    SavingsGoal,
+    SavingsGoalCreate,
+    SavingsGoalModel,
     Transaction,
     TransactionCreate,
     TransactionModel,
@@ -551,3 +555,150 @@ def delete_budget(
         "message": "Budget deleted successfully",
         "id": budget_id,
     }
+
+
+@app.post(
+    "/savings-goals",
+    response_model=SavingsGoal,
+    status_code=201,
+)
+def create_savings_goal(
+    goal: SavingsGoalCreate,
+    db: Session = Depends(get_db),
+):
+    if goal.current_amount > goal.target_amount:
+        raise HTTPException(
+            status_code=400,
+            detail="Current amount cannot exceed the target amount",
+        )
+
+    new_goal = SavingsGoalModel(
+        name=goal.name,
+        target_amount=goal.target_amount,
+        current_amount=goal.current_amount,
+        target_date=goal.target_date,
+    )
+    db.add(new_goal)
+    db.commit()
+    db.refresh(new_goal)
+    return new_goal
+
+
+@app.get(
+    "/savings-goals",
+    response_model=list[SavingsGoal],
+)
+def get_savings_goals(
+    db: Session = Depends(get_db),
+):
+    return db.query(SavingsGoalModel).order_by(SavingsGoalModel.id.desc()).all()
+
+
+@app.put(
+    "/savings-goals/{goal_id}",
+    response_model=SavingsGoal,
+)
+def update_savings_goal(
+    goal_id: int,
+    goal: SavingsGoalCreate,
+    db: Session = Depends(get_db),
+):
+    existing_goal = (
+        db.query(SavingsGoalModel)
+        .filter(SavingsGoalModel.id == goal_id)
+        .first()
+    )
+
+    if existing_goal is None:
+        raise HTTPException(status_code=404, detail="Savings goal not found")
+
+    if goal.current_amount > goal.target_amount:
+        raise HTTPException(
+            status_code=400,
+            detail="Current amount cannot exceed the target amount",
+        )
+
+    existing_goal.name = goal.name
+    existing_goal.target_amount = goal.target_amount
+    existing_goal.current_amount = goal.current_amount
+    existing_goal.target_date = goal.target_date
+    db.commit()
+    db.refresh(existing_goal)
+    return existing_goal
+
+
+@app.post(
+    "/savings-goals/{goal_id}/contribute",
+    response_model=SavingsGoal,
+)
+def contribute_to_savings_goal(
+    goal_id: int,
+    contribution: SavingsContribution,
+    db: Session = Depends(get_db),
+):
+    goal = (
+        db.query(SavingsGoalModel)
+        .filter(SavingsGoalModel.id == goal_id)
+        .first()
+    )
+
+    if goal is None:
+        raise HTTPException(status_code=404, detail="Savings goal not found")
+
+    goal.current_amount = min(
+        goal.current_amount + contribution.amount,
+        goal.target_amount,
+    )
+    db.commit()
+    db.refresh(goal)
+    return goal
+
+
+@app.post(
+    "/savings-goals/{goal_id}/withdraw",
+    response_model=SavingsGoal,
+)
+def withdraw_from_savings_goal(
+    goal_id: int,
+    contribution: SavingsContribution,
+    db: Session = Depends(get_db),
+):
+    goal = (
+        db.query(SavingsGoalModel)
+        .filter(SavingsGoalModel.id == goal_id)
+        .first()
+    )
+
+    if goal is None:
+        raise HTTPException(status_code=404, detail="Savings goal not found")
+
+    if contribution.amount > goal.current_amount:
+        raise HTTPException(
+            status_code=400,
+            detail="Withdrawal cannot exceed the saved amount",
+        )
+
+    goal.current_amount -= contribution.amount
+    db.commit()
+    db.refresh(goal)
+    return goal
+
+
+@app.delete("/savings-goals/{goal_id}")
+def delete_savings_goal(
+    goal_id: int,
+    db: Session = Depends(get_db),
+):
+    goal = (
+        db.query(SavingsGoalModel)
+        .filter(SavingsGoalModel.id == goal_id)
+        .first()
+    )
+
+    if goal is None:
+        raise HTTPException(status_code=404, detail="Savings goal not found")
+
+    db.delete(goal)
+    db.commit()
+    return {"message": "Savings goal deleted successfully", "id": goal_id}
+

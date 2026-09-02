@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { FormEvent } from "react";
+import type { ChangeEvent, FormEvent } from "react";
 import ReactMarkdown from "react-markdown";
 import {
   Bar,
@@ -18,6 +18,7 @@ import "./App.css";
 
 type TransactionType = "income" | "expense";
 type RecurringFrequency = "weekly" | "biweekly" | "monthly" | "yearly";
+type DateFilter = "all" | "current" | "previous" | "custom";
 
 interface Transaction {
   id: number;
@@ -80,6 +81,21 @@ interface BudgetForm {
   monthly_limit: string;
 }
 
+interface SavingsGoal {
+  id: number;
+  name: string;
+  target_amount: number;
+  current_amount: number;
+  target_date: string | null;
+}
+
+interface SavingsGoalForm {
+  name: string;
+  target_amount: string;
+  current_amount: string;
+  target_date: string;
+}
+
 const emptyForm: TransactionForm = {
   description: "",
   amount: "",
@@ -100,6 +116,13 @@ const emptyRecurringForm: RecurringTransactionForm = {
 const emptyBudgetForm: BudgetForm = {
   category: "",
   monthly_limit: "",
+};
+
+const emptySavingsGoalForm: SavingsGoalForm = {
+  name: "",
+  target_amount: "",
+  current_amount: "0",
+  target_date: "",
 };
 
 const expenseCategories = [
@@ -136,6 +159,38 @@ const incomeCategories = [
   "Other Income",
 ];
 
+function escapeCsvValue(value: string | number) {
+  const text = String(value);
+  return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+}
+
+function parseCsvRow(row: string) {
+  const values: string[] = [];
+  let value = "";
+  let inQuotes = false;
+
+  for (let index = 0; index < row.length; index += 1) {
+    const character = row[index];
+
+    if (character === '"') {
+      if (inQuotes && row[index + 1] === '"') {
+        value += '"';
+        index += 1;
+      } else {
+        inQuotes = !inQuotes;
+      }
+    } else if (character === "," && !inQuotes) {
+      values.push(value.trim());
+      value = "";
+    } else {
+      value += character;
+    }
+  }
+
+  values.push(value.trim());
+  return values;
+}
+
 function App() {
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [form, setForm] = useState<TransactionForm>(emptyForm);
@@ -160,12 +215,84 @@ function App() {
   const [budgetEditingId, setBudgetEditingId] = useState<number | null>(null);
   const [budgetLoading, setBudgetLoading] = useState(false);
   const [budgetError, setBudgetError] = useState("");
+  const [dateFilter, setDateFilter] = useState<DateFilter>("all");
+  const [customStartDate, setCustomStartDate] = useState("");
+  const [customEndDate, setCustomEndDate] = useState("");
+  const [savingsGoals, setSavingsGoals] = useState<SavingsGoal[]>([]);
+  const [savingsGoalForm, setSavingsGoalForm] =
+    useState<SavingsGoalForm>(emptySavingsGoalForm);
+  const [savingsGoalEditingId, setSavingsGoalEditingId] = useState<
+    number | null
+  >(null);
+  const [contributionAmounts, setContributionAmounts] = useState<
+    Record<number, string>
+  >({});
+  const [savingsGoalLoading, setSavingsGoalLoading] = useState(false);
+  const [savingsGoalError, setSavingsGoalError] = useState("");
+  const [transactionSearch, setTransactionSearch] = useState("");
+  const [transactionTypeFilter, setTransactionTypeFilter] = useState<
+    "all" | TransactionType
+  >("all");
+  const [transactionCategoryFilter, setTransactionCategoryFilter] =
+    useState("all");
+  const [csvLoading, setCsvLoading] = useState(false);
+  const [csvMessage, setCsvMessage] = useState("");
+  const [csvError, setCsvError] = useState("");
 
-  const totalIncome = transactions
+  const now = new Date();
+  const currentMonthKey = `${now.getFullYear()}-${String(
+    now.getMonth() + 1,
+  ).padStart(2, "0")}`;
+  const previousMonthDate = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+  const previousMonthKey = `${previousMonthDate.getFullYear()}-${String(
+    previousMonthDate.getMonth() + 1,
+  ).padStart(2, "0")}`;
+
+  const filteredTransactions = transactions.filter((transaction) => {
+    if (dateFilter === "current") {
+      return transaction.transaction_date.startsWith(currentMonthKey);
+    }
+
+    if (dateFilter === "previous") {
+      return transaction.transaction_date.startsWith(previousMonthKey);
+    }
+
+    if (dateFilter === "custom") {
+      const afterStart =
+        !customStartDate || transaction.transaction_date >= customStartDate;
+      const beforeEnd =
+        !customEndDate || transaction.transaction_date <= customEndDate;
+      return afterStart && beforeEnd;
+    }
+
+    return true;
+  });
+
+  const visibleTransactions = filteredTransactions.filter((transaction) => {
+    const searchTerm = transactionSearch.trim().toLowerCase();
+    const matchesSearch =
+      !searchTerm ||
+      transaction.description.toLowerCase().includes(searchTerm) ||
+      transaction.category.toLowerCase().includes(searchTerm);
+    const matchesType =
+      transactionTypeFilter === "all" ||
+      transaction.transaction_type === transactionTypeFilter;
+    const matchesCategory =
+      transactionCategoryFilter === "all" ||
+      transaction.category === transactionCategoryFilter;
+
+    return matchesSearch && matchesType && matchesCategory;
+  });
+
+  const availableTransactionCategories = Array.from(
+    new Set(filteredTransactions.map((transaction) => transaction.category)),
+  ).sort();
+
+  const totalIncome = filteredTransactions
     .filter((transaction) => transaction.transaction_type === "income")
     .reduce((total, transaction) => total + transaction.amount, 0);
 
-  const totalExpenses = transactions
+  const totalExpenses = filteredTransactions
     .filter((transaction) => transaction.transaction_type === "expense")
     .reduce((total, transaction) => total + transaction.amount, 0);
 
@@ -184,7 +311,7 @@ function App() {
       return totals;
     }, {});
 
-  const spendingByCategory = transactions
+  const spendingByCategory = filteredTransactions
     .filter((transaction) => transaction.transaction_type === "expense")
     .reduce<Record<string, number>>((totals, transaction) => {
       totals[transaction.category] =
@@ -211,7 +338,7 @@ function App() {
     "#818cf8",
   ];
 
-  const monthlySpending = transactions
+  const monthlySpending = filteredTransactions
     .filter((transaction) => transaction.transaction_type === "expense")
     .reduce<Record<string, number>>((totals, transaction) => {
       const month = transaction.transaction_date.slice(0, 7);
@@ -314,12 +441,307 @@ function App() {
     }
   }
 
+  async function loadSavingsGoals() {
+    try {
+      const response = await fetch("http://127.0.0.1:8000/savings-goals");
+
+      if (!response.ok) {
+        throw new Error("Unable to load savings goals.");
+      }
+
+      const data: SavingsGoal[] = await response.json();
+      setSavingsGoals(data);
+    } catch (err) {
+      setSavingsGoalError(
+        err instanceof Error ? err.message : "Unable to load savings goals.",
+      );
+    }
+  }
+
   useEffect(() => {
     loadTransactions();
     loadRecurringTransactions();
     loadForecast();
     loadBudgets();
+    loadSavingsGoals();
   }, []);
+
+  async function saveSavingsGoal(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setSavingsGoalError("");
+
+    const targetAmount = Number(savingsGoalForm.target_amount);
+    const currentAmount = Number(savingsGoalForm.current_amount || 0);
+
+    if (!savingsGoalForm.name || !savingsGoalForm.target_amount) {
+      setSavingsGoalError("Enter a goal name and target amount.");
+      return;
+    }
+
+    if (
+      Number.isNaN(targetAmount) ||
+      targetAmount <= 0 ||
+      Number.isNaN(currentAmount) ||
+      currentAmount < 0 ||
+      currentAmount > targetAmount
+    ) {
+      setSavingsGoalError(
+        "Use valid amounts, and keep the saved amount at or below the target.",
+      );
+      return;
+    }
+
+    setSavingsGoalLoading(true);
+
+    try {
+      const url =
+        savingsGoalEditingId === null
+          ? "http://127.0.0.1:8000/savings-goals"
+          : `http://127.0.0.1:8000/savings-goals/${savingsGoalEditingId}`;
+      const response = await fetch(url, {
+        method: savingsGoalEditingId === null ? "POST" : "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: savingsGoalForm.name,
+          target_amount: targetAmount,
+          current_amount: currentAmount,
+          target_date: savingsGoalForm.target_date || null,
+        }),
+      });
+
+      if (!response.ok) {
+        const data = await response.json().catch(() => null);
+        throw new Error(data?.detail || "Unable to save savings goal.");
+      }
+
+      setSavingsGoalForm(emptySavingsGoalForm);
+      setSavingsGoalEditingId(null);
+      await loadSavingsGoals();
+    } catch (err) {
+      setSavingsGoalError(
+        err instanceof Error ? err.message : "Unable to save savings goal.",
+      );
+    } finally {
+      setSavingsGoalLoading(false);
+    }
+  }
+
+  function startSavingsGoalEdit(goal: SavingsGoal) {
+    setSavingsGoalEditingId(goal.id);
+    setSavingsGoalForm({
+      name: goal.name,
+      target_amount: goal.target_amount.toString(),
+      current_amount: goal.current_amount.toString(),
+      target_date: goal.target_date || "",
+    });
+    setSavingsGoalError("");
+  }
+
+  function cancelSavingsGoalEdit() {
+    setSavingsGoalEditingId(null);
+    setSavingsGoalForm(emptySavingsGoalForm);
+    setSavingsGoalError("");
+  }
+
+  async function changeSavingsGoalBalance(
+    goalId: number,
+    action: "contribute" | "withdraw",
+  ) {
+    const amount = Number(contributionAmounts[goalId]);
+
+    if (Number.isNaN(amount) || amount <= 0) {
+      setSavingsGoalError("Enter an amount greater than zero.");
+      return;
+    }
+
+    setSavingsGoalError("");
+
+    try {
+      const response = await fetch(
+        `http://127.0.0.1:8000/savings-goals/${goalId}/${action}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ amount }),
+        },
+      );
+
+      if (!response.ok) {
+        const data = await response.json().catch(() => null);
+        throw new Error(data?.detail || "Unable to update savings goal.");
+      }
+
+      setContributionAmounts({
+        ...contributionAmounts,
+        [goalId]: "",
+      });
+      await loadSavingsGoals();
+    } catch (err) {
+      setSavingsGoalError(
+        err instanceof Error ? err.message : "Unable to update savings goal.",
+      );
+    }
+  }
+
+  async function deleteSavingsGoal(id: number) {
+    if (!window.confirm("Delete this savings goal?")) {
+      return;
+    }
+
+    setSavingsGoalError("");
+
+    try {
+      const response = await fetch(
+        `http://127.0.0.1:8000/savings-goals/${id}`,
+        { method: "DELETE" },
+      );
+
+      if (!response.ok) {
+        throw new Error("Unable to delete savings goal.");
+      }
+
+      if (savingsGoalEditingId === id) {
+        cancelSavingsGoalEdit();
+      }
+      await loadSavingsGoals();
+    } catch (err) {
+      setSavingsGoalError(
+        err instanceof Error ? err.message : "Unable to delete savings goal.",
+      );
+    }
+  }
+
+  function exportTransactionsToCsv() {
+    setCsvError("");
+    setCsvMessage("");
+
+    const headers = [
+      "description",
+      "amount",
+      "category",
+      "transaction_type",
+      "transaction_date",
+    ];
+    const rows = visibleTransactions.map((transaction) =>
+      [
+        transaction.description,
+        transaction.amount,
+        transaction.category,
+        transaction.transaction_type,
+        transaction.transaction_date,
+      ]
+        .map(escapeCsvValue)
+        .join(","),
+    );
+    const csv = [headers.join(","), ...rows].join("\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `finsight-transactions-${new Date()
+      .toISOString()
+      .slice(0, 10)}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+    setCsvMessage(`Exported ${visibleTransactions.length} transactions.`);
+  }
+
+  async function importTransactionsFromCsv(
+    event: ChangeEvent<HTMLInputElement>,
+  ) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+
+    if (!file) {
+      return;
+    }
+
+    setCsvLoading(true);
+    setCsvError("");
+    setCsvMessage("");
+
+    try {
+      const text = await file.text();
+      const lines = text
+        .replace(/^\uFEFF/, "")
+        .split(/\r?\n/)
+        .filter((line) => line.trim());
+
+      if (lines.length < 2) {
+        throw new Error("The CSV file does not contain any transactions.");
+      }
+
+      const requiredHeaders = [
+        "description",
+        "amount",
+        "category",
+        "transaction_type",
+        "transaction_date",
+      ];
+      const headers = parseCsvRow(lines[0]).map((header) =>
+        header.toLowerCase(),
+      );
+      const indexes = requiredHeaders.map((header) => headers.indexOf(header));
+
+      if (indexes.some((index) => index === -1)) {
+        throw new Error(`CSV headers must be: ${requiredHeaders.join(", ")}`);
+      }
+
+      let importedCount = 0;
+
+      for (const line of lines.slice(1)) {
+        const values = parseCsvRow(line);
+        const [description, amountText, category, type, date] = indexes.map(
+          (index) => values[index] || "",
+        );
+        const amount = Number(amountText);
+
+        if (
+          !description ||
+          !category ||
+          !date ||
+          Number.isNaN(amount) ||
+          amount <= 0 ||
+          !["income", "expense"].includes(type)
+        ) {
+          throw new Error(
+            `Invalid transaction on CSV row ${importedCount + 2}.`,
+          );
+        }
+
+        const response = await fetch("http://127.0.0.1:8000/transactions", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            description,
+            amount,
+            category,
+            transaction_type: type,
+            transaction_date: date,
+          }),
+        });
+
+        if (!response.ok) {
+          throw new Error(
+            `Unable to import transaction on CSV row ${importedCount + 2}.`,
+          );
+        }
+
+        importedCount += 1;
+      }
+
+      await loadTransactions();
+      setCsvMessage(`Successfully imported ${importedCount} transactions.`);
+    } catch (err) {
+      setCsvError(
+        err instanceof Error ? err.message : "Unable to import CSV file.",
+      );
+    } finally {
+      setCsvLoading(false);
+    }
+  }
 
   async function saveBudget(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -671,6 +1093,63 @@ function App() {
             <span>Total Expenses</span>
             <strong>${totalExpenses.toFixed(2)}</strong>
           </div>
+        </section>
+
+        <section className="content-card">
+          <div className="section-heading">
+            <div>
+              <p className="eyebrow">REPORTING PERIOD</p>
+              <h2>Filter Your Financial Activity</h2>
+            </div>
+          </div>
+
+          <div className="transaction-form">
+            <div className="form-group">
+              <label htmlFor="date-filter">Date Range</label>
+              <select
+                id="date-filter"
+                value={dateFilter}
+                onChange={(event) =>
+                  setDateFilter(event.target.value as DateFilter)
+                }
+              >
+                <option value="all">All Time</option>
+                <option value="current">Current Month</option>
+                <option value="previous">Previous Month</option>
+                <option value="custom">Custom Range</option>
+              </select>
+            </div>
+
+            {dateFilter === "custom" && (
+              <>
+                <div className="form-group">
+                  <label htmlFor="custom-start-date">Start Date</label>
+                  <input
+                    id="custom-start-date"
+                    type="date"
+                    value={customStartDate}
+                    onChange={(event) => setCustomStartDate(event.target.value)}
+                  />
+                </div>
+
+                <div className="form-group">
+                  <label htmlFor="custom-end-date">End Date</label>
+                  <input
+                    id="custom-end-date"
+                    type="date"
+                    value={customEndDate}
+                    onChange={(event) => setCustomEndDate(event.target.value)}
+                  />
+                </div>
+              </>
+            )}
+          </div>
+
+          <p className="ai-description">
+            Showing {filteredTransactions.length} transaction
+            {filteredTransactions.length === 1 ? "" : "s"}. Summary cards,
+            charts, and recent activity use this reporting period.
+          </p>
         </section>
 
         <section className="content-card">
@@ -1174,6 +1653,227 @@ function App() {
         <section className="content-card">
           <div className="section-heading">
             <div>
+              <p className="eyebrow">SAVINGS GOALS</p>
+              <h2>Build Toward What Matters</h2>
+            </div>
+          </div>
+
+          <form className="transaction-form" onSubmit={saveSavingsGoal}>
+            <div className="form-group">
+              <label htmlFor="goal-name">Goal Name</label>
+              <input
+                id="goal-name"
+                type="text"
+                value={savingsGoalForm.name}
+                onChange={(event) =>
+                  setSavingsGoalForm({
+                    ...savingsGoalForm,
+                    name: event.target.value,
+                  })
+                }
+                placeholder="Example: Emergency Fund"
+              />
+            </div>
+
+            <div className="form-group">
+              <label htmlFor="goal-target">Target Amount</label>
+              <input
+                id="goal-target"
+                type="number"
+                min="0"
+                step="0.01"
+                value={savingsGoalForm.target_amount}
+                onChange={(event) =>
+                  setSavingsGoalForm({
+                    ...savingsGoalForm,
+                    target_amount: event.target.value,
+                  })
+                }
+                placeholder="5000.00"
+              />
+            </div>
+
+            <div className="form-group">
+              <label htmlFor="goal-current">Already Saved</label>
+              <input
+                id="goal-current"
+                type="number"
+                min="0"
+                step="0.01"
+                value={savingsGoalForm.current_amount}
+                onChange={(event) =>
+                  setSavingsGoalForm({
+                    ...savingsGoalForm,
+                    current_amount: event.target.value,
+                  })
+                }
+                placeholder="0.00"
+              />
+            </div>
+
+            <div className="form-group">
+              <label htmlFor="goal-date">Target Date (Optional)</label>
+              <input
+                id="goal-date"
+                type="date"
+                value={savingsGoalForm.target_date}
+                onChange={(event) =>
+                  setSavingsGoalForm({
+                    ...savingsGoalForm,
+                    target_date: event.target.value,
+                  })
+                }
+              />
+            </div>
+
+            <div className="form-actions">
+              <button
+                type="submit"
+                className="add-button"
+                disabled={savingsGoalLoading}
+              >
+                {savingsGoalLoading
+                  ? "Saving..."
+                  : savingsGoalEditingId === null
+                    ? "Add Savings Goal"
+                    : "Update Savings Goal"}
+              </button>
+
+              {savingsGoalEditingId !== null && (
+                <button
+                  type="button"
+                  className="cancel-button"
+                  onClick={cancelSavingsGoalEdit}
+                >
+                  Cancel
+                </button>
+              )}
+            </div>
+          </form>
+
+          {savingsGoalError && (
+            <p className="error-message">{savingsGoalError}</p>
+          )}
+
+          {savingsGoals.length === 0 ? (
+            <div className="empty-state">
+              <h3>No savings goals yet</h3>
+              <p>Create a goal and begin tracking your progress.</p>
+            </div>
+          ) : (
+            <div className="transaction-list">
+              {savingsGoals.map((goal) => {
+                const percentage = Math.min(
+                  (goal.current_amount / goal.target_amount) * 100,
+                  100,
+                );
+                const remaining = goal.target_amount - goal.current_amount;
+                const completed = percentage >= 100;
+
+                return (
+                  <div className="transaction" key={goal.id}>
+                    <div style={{ flex: 1 }}>
+                      <strong>{goal.name}</strong>
+                      <p>
+                        ${goal.current_amount.toFixed(2)} of $
+                        {goal.target_amount.toFixed(2)} • $
+                        {remaining.toFixed(2)} remaining
+                        {goal.target_date
+                          ? ` • Target ${goal.target_date}`
+                          : ""}
+                      </p>
+                      <div
+                        style={{
+                          height: "12px",
+                          marginTop: "10px",
+                          overflow: "hidden",
+                          borderRadius: "999px",
+                          background: "#1e293b",
+                        }}
+                      >
+                        <div
+                          style={{
+                            width: `${percentage}%`,
+                            height: "100%",
+                            borderRadius: "999px",
+                            background: completed ? "#34d399" : "#60a5fa",
+                          }}
+                        />
+                      </div>
+                      <p
+                        style={{
+                          color: completed ? "#34d399" : "#60a5fa",
+                          marginTop: "8px",
+                        }}
+                      >
+                        {completed
+                          ? "Goal complete!"
+                          : `${percentage.toFixed(0)}% complete`}
+                      </p>
+
+                      <div className="form-actions">
+                        <input
+                          type="number"
+                          min="0"
+                          step="0.01"
+                          aria-label={`Amount for ${goal.name}`}
+                          value={contributionAmounts[goal.id] || ""}
+                          onChange={(event) =>
+                            setContributionAmounts({
+                              ...contributionAmounts,
+                              [goal.id]: event.target.value,
+                            })
+                          }
+                          placeholder="Amount"
+                          style={{ maxWidth: "180px" }}
+                        />
+                        <button
+                          type="button"
+                          className="add-button"
+                          onClick={() =>
+                            changeSavingsGoalBalance(goal.id, "contribute")
+                          }
+                        >
+                          Add Money
+                        </button>
+                        <button
+                          type="button"
+                          className="cancel-button"
+                          onClick={() =>
+                            changeSavingsGoalBalance(goal.id, "withdraw")
+                          }
+                        >
+                          Withdraw
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="transaction-actions">
+                      <button
+                        type="button"
+                        className="edit-button"
+                        onClick={() => startSavingsGoalEdit(goal)}
+                      >
+                        Edit
+                      </button>
+                      <button
+                        type="button"
+                        className="delete-button"
+                        onClick={() => deleteSavingsGoal(goal.id)}
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </section>
+
+        <section className="content-card">
+          <div className="section-heading">
+            <div>
               <p className="eyebrow">SPENDING ANALYSIS</p>
               <h2>Spending by Category</h2>
             </div>
@@ -1324,17 +2024,109 @@ function App() {
             </div>
           </div>
 
-          {transactions.length === 0 ? (
+          <div className="form-actions">
+            <button
+              type="button"
+              className="add-button"
+              onClick={exportTransactionsToCsv}
+            >
+              Export Visible CSV
+            </button>
+
+            <label className="cancel-button" style={{ cursor: "pointer" }}>
+              {csvLoading ? "Importing..." : "Import CSV"}
+              <input
+                type="file"
+                accept=".csv,text/csv"
+                disabled={csvLoading}
+                onChange={importTransactionsFromCsv}
+                style={{ display: "none" }}
+              />
+            </label>
+          </div>
+
+          {csvMessage && <p className="success-message">{csvMessage}</p>}
+          {csvError && <p className="error-message">{csvError}</p>}
+
+          <div className="transaction-form">
+            <div className="form-group">
+              <label htmlFor="transaction-search">Search</label>
+              <input
+                id="transaction-search"
+                type="search"
+                value={transactionSearch}
+                onChange={(event) => setTransactionSearch(event.target.value)}
+                placeholder="Search description or category"
+              />
+            </div>
+
+            <div className="form-group">
+              <label htmlFor="transaction-type-filter">Type</label>
+              <select
+                id="transaction-type-filter"
+                value={transactionTypeFilter}
+                onChange={(event) =>
+                  setTransactionTypeFilter(
+                    event.target.value as "all" | TransactionType,
+                  )
+                }
+              >
+                <option value="all">All Types</option>
+                <option value="income">Income</option>
+                <option value="expense">Expenses</option>
+              </select>
+            </div>
+
+            <div className="form-group">
+              <label htmlFor="transaction-category-filter">Category</label>
+              <select
+                id="transaction-category-filter"
+                value={transactionCategoryFilter}
+                onChange={(event) =>
+                  setTransactionCategoryFilter(event.target.value)
+                }
+              >
+                <option value="all">All Categories</option>
+                {availableTransactionCategories.map((category) => (
+                  <option key={category} value={category}>
+                    {category}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="form-actions">
+              <button
+                type="button"
+                className="cancel-button"
+                onClick={() => {
+                  setTransactionSearch("");
+                  setTransactionTypeFilter("all");
+                  setTransactionCategoryFilter("all");
+                }}
+              >
+                Clear Filters
+              </button>
+            </div>
+          </div>
+
+          <p className="ai-description">
+            Showing {visibleTransactions.length} of{" "}
+            {filteredTransactions.length} transactions in this period.
+          </p>
+
+          {visibleTransactions.length === 0 ? (
             <div className="empty-state">
-              <h3>No transactions yet</h3>
+              <h3>No matching transactions</h3>
 
               <p>
-                Your income and expenses will appear here once you add them.
+                Adjust the search, filters, or reporting period to see
+                transactions.
               </p>
             </div>
           ) : (
             <div className="transaction-list">
-              {transactions.map((transaction) => (
+              {visibleTransactions.map((transaction) => (
                 <div className="transaction" key={transaction.id}>
                   <div>
                     <strong>{transaction.description}</strong>

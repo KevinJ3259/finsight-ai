@@ -12,6 +12,9 @@ from backend.models import (
     Budget,
     BudgetCreate,
     BudgetModel,
+    RecurringTransaction,
+    RecurringTransactionCreate,
+    RecurringTransactionModel,
     Transaction,
     TransactionCreate,
     TransactionModel,
@@ -295,3 +298,186 @@ Keep the response clear and practical.
             status_code=500,
             detail=f"Unable to generate AI insights: {str(exc)}",
         ) from exc
+
+@app.post(
+    "/recurring-transactions",
+    response_model=RecurringTransaction,
+    status_code=201,
+)
+def create_recurring_transaction(
+    recurring_transaction: RecurringTransactionCreate,
+    db: Session = Depends(get_db),
+):
+    new_recurring_transaction = RecurringTransactionModel(
+        description=recurring_transaction.description,
+        amount=recurring_transaction.amount,
+        category=recurring_transaction.category,
+        transaction_type=recurring_transaction.transaction_type.value,
+        frequency=recurring_transaction.frequency.value,
+        next_due_date=recurring_transaction.next_due_date,
+        is_active=recurring_transaction.is_active,
+    )
+
+    db.add(new_recurring_transaction)
+    db.commit()
+    db.refresh(new_recurring_transaction)
+
+    return new_recurring_transaction
+
+
+@app.get(
+    "/recurring-transactions",
+    response_model=list[RecurringTransaction],
+)
+def get_recurring_transactions(
+    db: Session = Depends(get_db),
+):
+    return (
+        db.query(RecurringTransactionModel)
+        .order_by(RecurringTransactionModel.next_due_date.asc())
+        .all()
+    )
+
+
+@app.put(
+    "/recurring-transactions/{recurring_transaction_id}",
+    response_model=RecurringTransaction,
+)
+def update_recurring_transaction(
+    recurring_transaction_id: int,
+    recurring_transaction: RecurringTransactionCreate,
+    db: Session = Depends(get_db),
+):
+    existing = (
+        db.query(RecurringTransactionModel)
+        .filter(
+            RecurringTransactionModel.id
+            == recurring_transaction_id
+        )
+        .first()
+    )
+
+    if existing is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Recurring transaction not found",
+        )
+
+    existing.description = recurring_transaction.description
+    existing.amount = recurring_transaction.amount
+    existing.category = recurring_transaction.category
+    existing.transaction_type = (
+        recurring_transaction.transaction_type.value
+    )
+    existing.frequency = recurring_transaction.frequency.value
+    existing.next_due_date = recurring_transaction.next_due_date
+    existing.is_active = recurring_transaction.is_active
+
+    db.commit()
+    db.refresh(existing)
+
+    return existing
+
+
+@app.delete(
+    "/recurring-transactions/{recurring_transaction_id}"
+)
+def delete_recurring_transaction(
+    recurring_transaction_id: int,
+    db: Session = Depends(get_db),
+):
+    recurring_transaction = (
+        db.query(RecurringTransactionModel)
+        .filter(
+            RecurringTransactionModel.id
+            == recurring_transaction_id
+        )
+        .first()
+    )
+
+    if recurring_transaction is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Recurring transaction not found",
+        )
+
+    db.delete(recurring_transaction)
+    db.commit()
+
+    return {
+        "message": "Recurring transaction deleted successfully",
+        "id": recurring_transaction_id,
+    }
+
+
+@app.get("/cash-flow/forecast")
+def get_cash_flow_forecast(
+    db: Session = Depends(get_db),
+):
+    transactions = db.query(TransactionModel).all()
+    recurring_transactions = (
+        db.query(RecurringTransactionModel)
+        .filter(RecurringTransactionModel.is_active.is_(True))
+        .all()
+    )
+
+    current_balance = sum(
+        transaction.amount
+        if transaction.transaction_type == "income"
+        else -transaction.amount
+        for transaction in transactions
+    )
+
+    frequency_multipliers = {
+        "weekly": 52 / 12,
+        "biweekly": 26 / 12,
+        "monthly": 1,
+        "yearly": 1 / 12,
+    }
+
+    projected_income = 0.0
+    projected_expenses = 0.0
+
+    for recurring_transaction in recurring_transactions:
+        monthly_amount = (
+            recurring_transaction.amount
+            * frequency_multipliers.get(
+                recurring_transaction.frequency,
+                1,
+            )
+        )
+
+        if recurring_transaction.transaction_type == "income":
+            projected_income += monthly_amount
+        else:
+            projected_expenses += monthly_amount
+
+    projected_net_cash_flow = (
+        projected_income - projected_expenses
+    )
+    projected_ending_balance = (
+        current_balance + projected_net_cash_flow
+    )
+
+    return {
+        "current_balance": round(current_balance, 2),
+        "projected_monthly_income": round(
+            projected_income,
+            2,
+        ),
+        "projected_monthly_expenses": round(
+            projected_expenses,
+            2,
+        ),
+        "projected_net_cash_flow": round(
+            projected_net_cash_flow,
+            2,
+        ),
+        "projected_ending_balance": round(
+            projected_ending_balance,
+            2,
+        ),
+        "active_recurring_transactions": len(
+            recurring_transactions
+        ),
+    }

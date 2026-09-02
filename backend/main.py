@@ -604,9 +604,16 @@ Keep the response clear and practical.
         response = client.responses.create(model="gpt-5.5", input=prompt)
         return {"insight": response.output_text}
     except Exception as exc:
+        print(
+            "AI insight generation failed:",
+            type(exc).__name__,
+        )
         raise HTTPException(
             status_code=500,
-            detail=f"Unable to generate AI insights: {str(exc)}",
+            detail=(
+                "Unable to generate AI insights right now. "
+                "Please try again later."
+            ),
         ) from exc
 
 

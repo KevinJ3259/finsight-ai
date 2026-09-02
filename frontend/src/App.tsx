@@ -16,6 +16,10 @@ import {
 } from "recharts";
 import "./App.css";
 
+const API_URL = (
+  import.meta.env.VITE_API_URL || "http://127.0.0.1:8000"
+).replace(/\/$/, "");
+
 type TransactionType = "income" | "expense";
 type RecurringFrequency = "weekly" | "biweekly" | "monthly" | "yearly";
 type DateFilter = "all" | "current" | "previous" | "custom";
@@ -369,7 +373,7 @@ function App() {
 
   async function loadTransactions() {
     try {
-      const response = await fetch("http://127.0.0.1:8000/transactions");
+      const response = await fetch(`${API_URL}/transactions`);
 
       if (!response.ok) {
         throw new Error("Unable to load transactions.");
@@ -386,9 +390,7 @@ function App() {
 
   async function loadRecurringTransactions() {
     try {
-      const response = await fetch(
-        "http://127.0.0.1:8000/recurring-transactions",
-      );
+      const response = await fetch(`${API_URL}/recurring-transactions`);
 
       if (!response.ok) {
         throw new Error("Unable to load recurring transactions.");
@@ -407,7 +409,7 @@ function App() {
 
   async function loadForecast() {
     try {
-      const response = await fetch("http://127.0.0.1:8000/cash-flow/forecast");
+      const response = await fetch(`${API_URL}/cash-flow/forecast`);
 
       if (!response.ok) {
         throw new Error("Unable to load cash-flow forecast.");
@@ -426,7 +428,7 @@ function App() {
 
   async function loadBudgets() {
     try {
-      const response = await fetch("http://127.0.0.1:8000/budgets");
+      const response = await fetch(`${API_URL}/budgets`);
 
       if (!response.ok) {
         throw new Error("Unable to load budgets.");
@@ -443,7 +445,7 @@ function App() {
 
   async function loadSavingsGoals() {
     try {
-      const response = await fetch("http://127.0.0.1:8000/savings-goals");
+      const response = await fetch(`${API_URL}/savings-goals`);
 
       if (!response.ok) {
         throw new Error("Unable to load savings goals.");
@@ -496,8 +498,8 @@ function App() {
     try {
       const url =
         savingsGoalEditingId === null
-          ? "http://127.0.0.1:8000/savings-goals"
-          : `http://127.0.0.1:8000/savings-goals/${savingsGoalEditingId}`;
+          ? `${API_URL}/savings-goals`
+          : `${API_URL}/savings-goals/${savingsGoalEditingId}`;
       const response = await fetch(url, {
         method: savingsGoalEditingId === null ? "POST" : "PUT",
         headers: { "Content-Type": "application/json" },
@@ -558,7 +560,7 @@ function App() {
 
     try {
       const response = await fetch(
-        `http://127.0.0.1:8000/savings-goals/${goalId}/${action}`,
+        `${API_URL}/savings-goals/${goalId}/${action}`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -591,10 +593,9 @@ function App() {
     setSavingsGoalError("");
 
     try {
-      const response = await fetch(
-        `http://127.0.0.1:8000/savings-goals/${id}`,
-        { method: "DELETE" },
-      );
+      const response = await fetch(`${API_URL}/savings-goals/${id}`, {
+        method: "DELETE",
+      });
 
       if (!response.ok) {
         throw new Error("Unable to delete savings goal.");
@@ -711,7 +712,7 @@ function App() {
           );
         }
 
-        const response = await fetch("http://127.0.0.1:8000/transactions", {
+        const response = await fetch(`${API_URL}/transactions`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -764,8 +765,8 @@ function App() {
     try {
       const url =
         budgetEditingId === null
-          ? "http://127.0.0.1:8000/budgets"
-          : `http://127.0.0.1:8000/budgets/${budgetEditingId}`;
+          ? `${API_URL}/budgets`
+          : `${API_URL}/budgets/${budgetEditingId}`;
       const response = await fetch(url, {
         method: budgetEditingId === null ? "POST" : "PUT",
         headers: { "Content-Type": "application/json" },
@@ -815,7 +816,7 @@ function App() {
     setBudgetError("");
 
     try {
-      const response = await fetch(`http://127.0.0.1:8000/budgets/${id}`, {
+      const response = await fetch(`${API_URL}/budgets/${id}`, {
         method: "DELETE",
       });
 
@@ -858,20 +859,17 @@ function App() {
     setRecurringLoading(true);
 
     try {
-      const response = await fetch(
-        "http://127.0.0.1:8000/recurring-transactions",
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            ...recurringForm,
-            amount,
-            is_active: true,
-          }),
+      const response = await fetch(`${API_URL}/recurring-transactions`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
         },
-      );
+        body: JSON.stringify({
+          ...recurringForm,
+          amount,
+          is_active: true,
+        }),
+      });
 
       if (!response.ok) {
         throw new Error("Unable to create recurring transaction.");
@@ -901,10 +899,9 @@ function App() {
     setRecurringError("");
 
     try {
-      const response = await fetch(
-        `http://127.0.0.1:8000/recurring-transactions/${id}`,
-        { method: "DELETE" },
-      );
+      const response = await fetch(`${API_URL}/recurring-transactions/${id}`, {
+        method: "DELETE",
+      });
 
       if (!response.ok) {
         throw new Error("Unable to delete recurring transaction.");
@@ -941,8 +938,8 @@ function App() {
     try {
       const url =
         editingId !== null
-          ? `http://127.0.0.1:8000/transactions/${editingId}`
-          : "http://127.0.0.1:8000/transactions";
+          ? `${API_URL}/transactions/${editingId}`
+          : `${API_URL}/transactions`;
 
       const response = await fetch(url, {
         method: editingId !== null ? "PUT" : "POST",
@@ -993,7 +990,7 @@ function App() {
     setError("");
 
     try {
-      const response = await fetch(`http://127.0.0.1:8000/transactions/${id}`, {
+      const response = await fetch(`${API_URL}/transactions/${id}`, {
         method: "DELETE",
       });
 
@@ -1046,7 +1043,7 @@ function App() {
     setAiError("");
 
     try {
-      const response = await fetch("http://127.0.0.1:8000/ai/insights");
+      const response = await fetch(`${API_URL}/ai/insights`);
 
       if (!response.ok) {
         throw new Error("Unable to generate AI insights.");

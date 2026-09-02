@@ -1,12 +1,21 @@
 import os
 
+from dotenv import load_dotenv
+
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from openai import OpenAI
 from sqlalchemy.orm import Session
 
 from backend.database import Base, SessionLocal, engine
-from backend.models import Transaction, TransactionCreate, TransactionModel
+from backend.models import (
+    Budget,
+    BudgetCreate,
+    BudgetModel,
+    Transaction,
+    TransactionCreate,
+    TransactionModel,
+)
 
 
 Base.metadata.create_all(bind=engine)
@@ -16,6 +25,8 @@ app = FastAPI(
     description="Backend API for the FinSight AI Personal Finance Tracker",
     version="1.0.0",
 )
+
+load_dotenv("backend/.env")
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
@@ -140,9 +151,7 @@ def update_transaction(
     existing_transaction.transaction_type = (
         transaction.transaction_type.value
     )
-    existing_transaction.transaction_date = (
-        transaction.transaction_date
-    )
+    existing_transaction.transaction_date = transaction.transaction_date
 
     db.commit()
     db.refresh(existing_transaction)
@@ -174,6 +183,53 @@ def delete_transaction(
         "message": "Transaction deleted successfully",
         "id": transaction_id,
     }
+
+
+@app.post(
+    "/budgets",
+    response_model=Budget,
+    status_code=201,
+)
+def create_budget(
+    budget: BudgetCreate,
+    db: Session = Depends(get_db),
+):
+    existing_budget = (
+        db.query(BudgetModel)
+        .filter(BudgetModel.category == budget.category)
+        .first()
+    )
+
+    if existing_budget is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="A budget already exists for this category",
+        )
+
+    new_budget = BudgetModel(
+        category=budget.category,
+        monthly_limit=budget.monthly_limit,
+    )
+
+    db.add(new_budget)
+    db.commit()
+    db.refresh(new_budget)
+
+    return new_budget
+
+
+@app.get(
+    "/budgets",
+    response_model=list[Budget],
+)
+def get_budgets(
+    db: Session = Depends(get_db),
+):
+    return (
+        db.query(BudgetModel)
+        .order_by(BudgetModel.category.asc())
+        .all()
+    )
 
 
 @app.get("/ai/insights")

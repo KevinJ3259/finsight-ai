@@ -6,9 +6,15 @@ Screenshots
 
 Secure authentication
 
+![FinSight AI login and registration](docs/screenshots/login.png)
+
 Financial dashboard
 
+![FinSight AI financial dashboard](docs/screenshots/dashboard.png)
+
 Planning and analysis tools
+
+![FinSight AI budgets, savings, forecasts, and insights](docs/screenshots/features.png)
 
 Features
 

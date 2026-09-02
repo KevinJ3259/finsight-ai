@@ -1,12 +1,17 @@
 import os
 
 from dotenv import load_dotenv
-
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from openai import OpenAI
 from sqlalchemy.orm import Session
 
+from backend.auth import (
+    create_access_token,
+    get_current_user,
+    hash_password,
+    verify_password,
+)
 from backend.database import Base, SessionLocal, engine
 from backend.models import (
     Budget,
@@ -19,29 +24,28 @@ from backend.models import (
     SavingsGoal,
     SavingsGoalCreate,
     SavingsGoalModel,
+    Token,
     Transaction,
     TransactionCreate,
     TransactionModel,
+    User,
+    UserCreate,
+    UserLogin,
+    UserModel,
 )
 
 
+load_dotenv("backend/.env")
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI(
     title="FinSight AI API",
     description="Backend API for the FinSight AI Personal Finance Tracker",
-    version="1.0.0",
+    version="2.0.0",
 )
 
-load_dotenv("backend/.env")
-
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-
-frontend_url = os.getenv(
-    "FRONTEND_URL",
-    "http://localhost:5173",
-).rstrip("/")
-
+frontend_url = os.getenv("FRONTEND_URL", "http://localhost:5173").rstrip("/")
 allowed_origins = list(
     {
         "http://localhost:5173",
@@ -61,7 +65,6 @@ app.add_middleware(
 
 def get_db():
     db = SessionLocal()
-
     try:
         yield db
     finally:
@@ -70,225 +73,523 @@ def get_db():
 
 @app.get("/")
 def root():
-    return {
-        "message": "FinSight AI API is running",
-        "status": "success",
-    }
+    return {"message": "FinSight AI API is running", "status": "success"}
 
 
 @app.get("/health")
 def health_check():
-    return {
-        "status": "healthy",
-    }
+    return {"status": "healthy"}
 
 
-@app.post(
-    "/transactions",
-    response_model=Transaction,
-    status_code=201,
-)
+@app.post("/auth/register", response_model=Token, status_code=201)
+def register_user(user: UserCreate, db: Session = Depends(get_db)):
+    email = user.email.lower().strip()
+    existing = db.query(UserModel).filter(UserModel.email == email).first()
+    if existing:
+        raise HTTPException(status_code=409, detail="Email is already registered")
+
+    new_user = UserModel(
+        name=user.name.strip(),
+        email=email,
+        hashed_password=hash_password(user.password),
+    )
+    db.add(new_user)
+    db.commit()
+    db.refresh(new_user)
+
+    return Token(
+        access_token=create_access_token(new_user.id),
+        user=User.model_validate(new_user),
+    )
+
+
+@app.post("/auth/login", response_model=Token)
+def login_user(credentials: UserLogin, db: Session = Depends(get_db)):
+    email = credentials.email.lower().strip()
+    user = db.query(UserModel).filter(UserModel.email == email).first()
+    if user is None or not verify_password(
+        credentials.password, user.hashed_password
+    ):
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+
+    return Token(
+        access_token=create_access_token(user.id),
+        user=User.model_validate(user),
+    )
+
+
+@app.get("/auth/me", response_model=User)
+def get_authenticated_user(current_user: UserModel = Depends(get_current_user)):
+    return current_user
+
+
+@app.post("/transactions", response_model=Transaction, status_code=201)
 def create_transaction(
     transaction: TransactionCreate,
     db: Session = Depends(get_db),
+    current_user: UserModel = Depends(get_current_user),
 ):
-    new_transaction = TransactionModel(
+    record = TransactionModel(
+        user_id=current_user.id,
         description=transaction.description,
         amount=transaction.amount,
         category=transaction.category,
         transaction_type=transaction.transaction_type.value,
         transaction_date=transaction.transaction_date,
     )
-
-    db.add(new_transaction)
+    db.add(record)
     db.commit()
-    db.refresh(new_transaction)
+    db.refresh(record)
+    return record
 
-    return new_transaction
 
-
-@app.get(
-    "/transactions",
-    response_model=list[Transaction],
-)
+@app.get("/transactions", response_model=list[Transaction])
 def get_transactions(
     db: Session = Depends(get_db),
+    current_user: UserModel = Depends(get_current_user),
 ):
     return (
         db.query(TransactionModel)
+        .filter(TransactionModel.user_id == current_user.id)
         .order_by(TransactionModel.transaction_date.desc())
         .all()
     )
 
 
-@app.get(
-    "/transactions/{transaction_id}",
-    response_model=Transaction,
-)
+def find_transaction(db: Session, transaction_id: int, user_id: int):
+    record = (
+        db.query(TransactionModel)
+        .filter(
+            TransactionModel.id == transaction_id,
+            TransactionModel.user_id == user_id,
+        )
+        .first()
+    )
+    if record is None:
+        raise HTTPException(status_code=404, detail="Transaction not found")
+    return record
+
+
+@app.get("/transactions/{transaction_id}", response_model=Transaction)
 def get_transaction(
     transaction_id: int,
     db: Session = Depends(get_db),
+    current_user: UserModel = Depends(get_current_user),
 ):
-    transaction = (
-        db.query(TransactionModel)
-        .filter(TransactionModel.id == transaction_id)
-        .first()
-    )
-
-    if transaction is None:
-        raise HTTPException(
-            status_code=404,
-            detail="Transaction not found",
-        )
-
-    return transaction
+    return find_transaction(db, transaction_id, current_user.id)
 
 
-@app.put(
-    "/transactions/{transaction_id}",
-    response_model=Transaction,
-)
+@app.put("/transactions/{transaction_id}", response_model=Transaction)
 def update_transaction(
     transaction_id: int,
     transaction: TransactionCreate,
     db: Session = Depends(get_db),
+    current_user: UserModel = Depends(get_current_user),
 ):
-    existing_transaction = (
-        db.query(TransactionModel)
-        .filter(TransactionModel.id == transaction_id)
-        .first()
-    )
-
-    if existing_transaction is None:
-        raise HTTPException(
-            status_code=404,
-            detail="Transaction not found",
-        )
-
-    existing_transaction.description = transaction.description
-    existing_transaction.amount = transaction.amount
-    existing_transaction.category = transaction.category
-    existing_transaction.transaction_type = (
-        transaction.transaction_type.value
-    )
-    existing_transaction.transaction_date = transaction.transaction_date
-
+    record = find_transaction(db, transaction_id, current_user.id)
+    record.description = transaction.description
+    record.amount = transaction.amount
+    record.category = transaction.category
+    record.transaction_type = transaction.transaction_type.value
+    record.transaction_date = transaction.transaction_date
     db.commit()
-    db.refresh(existing_transaction)
-
-    return existing_transaction
+    db.refresh(record)
+    return record
 
 
 @app.delete("/transactions/{transaction_id}")
 def delete_transaction(
     transaction_id: int,
     db: Session = Depends(get_db),
+    current_user: UserModel = Depends(get_current_user),
 ):
-    transaction = (
-        db.query(TransactionModel)
-        .filter(TransactionModel.id == transaction_id)
-        .first()
-    )
-
-    if transaction is None:
-        raise HTTPException(
-            status_code=404,
-            detail="Transaction not found",
-        )
-
-    db.delete(transaction)
+    record = find_transaction(db, transaction_id, current_user.id)
+    db.delete(record)
     db.commit()
-
-    return {
-        "message": "Transaction deleted successfully",
-        "id": transaction_id,
-    }
+    return {"message": "Transaction deleted successfully", "id": transaction_id}
 
 
-@app.post(
-    "/budgets",
-    response_model=Budget,
-    status_code=201,
-)
+@app.post("/budgets", response_model=Budget, status_code=201)
 def create_budget(
     budget: BudgetCreate,
     db: Session = Depends(get_db),
+    current_user: UserModel = Depends(get_current_user),
 ):
-    existing_budget = (
+    existing = (
         db.query(BudgetModel)
-        .filter(BudgetModel.category == budget.category)
+        .filter(
+            BudgetModel.user_id == current_user.id,
+            BudgetModel.category == budget.category,
+        )
         .first()
     )
-
-    if existing_budget is not None:
+    if existing:
         raise HTTPException(
             status_code=409,
             detail="A budget already exists for this category",
         )
-
-    new_budget = BudgetModel(
+    record = BudgetModel(
+        user_id=current_user.id,
         category=budget.category,
         monthly_limit=budget.monthly_limit,
     )
-
-    db.add(new_budget)
+    db.add(record)
     db.commit()
-    db.refresh(new_budget)
+    db.refresh(record)
+    return record
 
-    return new_budget
 
-
-@app.get(
-    "/budgets",
-    response_model=list[Budget],
-)
+@app.get("/budgets", response_model=list[Budget])
 def get_budgets(
     db: Session = Depends(get_db),
+    current_user: UserModel = Depends(get_current_user),
 ):
     return (
         db.query(BudgetModel)
+        .filter(BudgetModel.user_id == current_user.id)
         .order_by(BudgetModel.category.asc())
         .all()
     )
 
 
-@app.get("/ai/insights")
-def get_financial_insights(
+def find_budget(db: Session, budget_id: int, user_id: int):
+    record = (
+        db.query(BudgetModel)
+        .filter(BudgetModel.id == budget_id, BudgetModel.user_id == user_id)
+        .first()
+    )
+    if record is None:
+        raise HTTPException(status_code=404, detail="Budget not found")
+    return record
+
+
+@app.put("/budgets/{budget_id}", response_model=Budget)
+def update_budget(
+    budget_id: int,
+    budget: BudgetCreate,
     db: Session = Depends(get_db),
+    current_user: UserModel = Depends(get_current_user),
 ):
-    transactions = (
-        db.query(TransactionModel)
-        .order_by(TransactionModel.transaction_date.desc())
+    record = find_budget(db, budget_id, current_user.id)
+    duplicate = (
+        db.query(BudgetModel)
+        .filter(
+            BudgetModel.user_id == current_user.id,
+            BudgetModel.category == budget.category,
+            BudgetModel.id != budget_id,
+        )
+        .first()
+    )
+    if duplicate:
+        raise HTTPException(
+            status_code=409,
+            detail="A budget already exists for this category",
+        )
+    record.category = budget.category
+    record.monthly_limit = budget.monthly_limit
+    db.commit()
+    db.refresh(record)
+    return record
+
+
+@app.delete("/budgets/{budget_id}")
+def delete_budget(
+    budget_id: int,
+    db: Session = Depends(get_db),
+    current_user: UserModel = Depends(get_current_user),
+):
+    record = find_budget(db, budget_id, current_user.id)
+    db.delete(record)
+    db.commit()
+    return {"message": "Budget deleted successfully", "id": budget_id}
+
+
+@app.post(
+    "/recurring-transactions",
+    response_model=RecurringTransaction,
+    status_code=201,
+)
+def create_recurring_transaction(
+    item: RecurringTransactionCreate,
+    db: Session = Depends(get_db),
+    current_user: UserModel = Depends(get_current_user),
+):
+    record = RecurringTransactionModel(
+        user_id=current_user.id,
+        description=item.description,
+        amount=item.amount,
+        category=item.category,
+        transaction_type=item.transaction_type.value,
+        frequency=item.frequency.value,
+        next_due_date=item.next_due_date,
+        is_active=item.is_active,
+    )
+    db.add(record)
+    db.commit()
+    db.refresh(record)
+    return record
+
+
+@app.get("/recurring-transactions", response_model=list[RecurringTransaction])
+def get_recurring_transactions(
+    db: Session = Depends(get_db),
+    current_user: UserModel = Depends(get_current_user),
+):
+    return (
+        db.query(RecurringTransactionModel)
+        .filter(RecurringTransactionModel.user_id == current_user.id)
+        .order_by(RecurringTransactionModel.next_due_date.asc())
         .all()
     )
 
-    if not transactions:
-        return {
-            "insight": (
-                "Add some transactions to receive "
-                "AI-powered financial insights."
-            )
-        }
 
-    transaction_summary = "\n".join(
-        [
-            (
-                f"{transaction.transaction_date} | "
-                f"{transaction.transaction_type} | "
-                f"{transaction.category} | "
-                f"{transaction.description} | "
-                f"${transaction.amount:.2f}"
-            )
-            for transaction in transactions
-        ]
+def find_recurring(db: Session, item_id: int, user_id: int):
+    record = (
+        db.query(RecurringTransactionModel)
+        .filter(
+            RecurringTransactionModel.id == item_id,
+            RecurringTransactionModel.user_id == user_id,
+        )
+        .first()
+    )
+    if record is None:
+        raise HTTPException(
+            status_code=404, detail="Recurring transaction not found"
+        )
+    return record
+
+
+@app.put(
+    "/recurring-transactions/{recurring_transaction_id}",
+    response_model=RecurringTransaction,
+)
+def update_recurring_transaction(
+    recurring_transaction_id: int,
+    item: RecurringTransactionCreate,
+    db: Session = Depends(get_db),
+    current_user: UserModel = Depends(get_current_user),
+):
+    record = find_recurring(db, recurring_transaction_id, current_user.id)
+    record.description = item.description
+    record.amount = item.amount
+    record.category = item.category
+    record.transaction_type = item.transaction_type.value
+    record.frequency = item.frequency.value
+    record.next_due_date = item.next_due_date
+    record.is_active = item.is_active
+    db.commit()
+    db.refresh(record)
+    return record
+
+
+@app.delete("/recurring-transactions/{recurring_transaction_id}")
+def delete_recurring_transaction(
+    recurring_transaction_id: int,
+    db: Session = Depends(get_db),
+    current_user: UserModel = Depends(get_current_user),
+):
+    record = find_recurring(db, recurring_transaction_id, current_user.id)
+    db.delete(record)
+    db.commit()
+    return {
+        "message": "Recurring transaction deleted successfully",
+        "id": recurring_transaction_id,
+    }
+
+
+@app.get("/cash-flow/forecast")
+def get_cash_flow_forecast(
+    db: Session = Depends(get_db),
+    current_user: UserModel = Depends(get_current_user),
+):
+    transactions = (
+        db.query(TransactionModel)
+        .filter(TransactionModel.user_id == current_user.id)
+        .all()
+    )
+    recurring = (
+        db.query(RecurringTransactionModel)
+        .filter(
+            RecurringTransactionModel.user_id == current_user.id,
+            RecurringTransactionModel.is_active.is_(True),
+        )
+        .all()
+    )
+    current_balance = sum(
+        item.amount if item.transaction_type == "income" else -item.amount
+        for item in transactions
+    )
+    multipliers = {
+        "weekly": 52 / 12,
+        "biweekly": 26 / 12,
+        "monthly": 1,
+        "yearly": 1 / 12,
+    }
+    income = 0.0
+    expenses = 0.0
+    for item in recurring:
+        monthly_amount = item.amount * multipliers.get(item.frequency, 1)
+        if item.transaction_type == "income":
+            income += monthly_amount
+        else:
+            expenses += monthly_amount
+    net = income - expenses
+    return {
+        "current_balance": round(current_balance, 2),
+        "projected_monthly_income": round(income, 2),
+        "projected_monthly_expenses": round(expenses, 2),
+        "projected_net_cash_flow": round(net, 2),
+        "projected_ending_balance": round(current_balance + net, 2),
+        "active_recurring_transactions": len(recurring),
+    }
+
+
+@app.post("/savings-goals", response_model=SavingsGoal, status_code=201)
+def create_savings_goal(
+    goal: SavingsGoalCreate,
+    db: Session = Depends(get_db),
+    current_user: UserModel = Depends(get_current_user),
+):
+    if goal.current_amount > goal.target_amount:
+        raise HTTPException(
+            status_code=400,
+            detail="Current amount cannot exceed the target amount",
+        )
+    record = SavingsGoalModel(
+        user_id=current_user.id,
+        name=goal.name,
+        target_amount=goal.target_amount,
+        current_amount=goal.current_amount,
+        target_date=goal.target_date,
+    )
+    db.add(record)
+    db.commit()
+    db.refresh(record)
+    return record
+
+
+@app.get("/savings-goals", response_model=list[SavingsGoal])
+def get_savings_goals(
+    db: Session = Depends(get_db),
+    current_user: UserModel = Depends(get_current_user),
+):
+    return (
+        db.query(SavingsGoalModel)
+        .filter(SavingsGoalModel.user_id == current_user.id)
+        .order_by(SavingsGoalModel.id.desc())
+        .all()
     )
 
+
+def find_goal(db: Session, goal_id: int, user_id: int):
+    record = (
+        db.query(SavingsGoalModel)
+        .filter(
+            SavingsGoalModel.id == goal_id,
+            SavingsGoalModel.user_id == user_id,
+        )
+        .first()
+    )
+    if record is None:
+        raise HTTPException(status_code=404, detail="Savings goal not found")
+    return record
+
+
+@app.put("/savings-goals/{goal_id}", response_model=SavingsGoal)
+def update_savings_goal(
+    goal_id: int,
+    goal: SavingsGoalCreate,
+    db: Session = Depends(get_db),
+    current_user: UserModel = Depends(get_current_user),
+):
+    record = find_goal(db, goal_id, current_user.id)
+    if goal.current_amount > goal.target_amount:
+        raise HTTPException(
+            status_code=400,
+            detail="Current amount cannot exceed the target amount",
+        )
+    record.name = goal.name
+    record.target_amount = goal.target_amount
+    record.current_amount = goal.current_amount
+    record.target_date = goal.target_date
+    db.commit()
+    db.refresh(record)
+    return record
+
+
+@app.post("/savings-goals/{goal_id}/contribute", response_model=SavingsGoal)
+def contribute_to_savings_goal(
+    goal_id: int,
+    contribution: SavingsContribution,
+    db: Session = Depends(get_db),
+    current_user: UserModel = Depends(get_current_user),
+):
+    record = find_goal(db, goal_id, current_user.id)
+    record.current_amount = min(
+        record.current_amount + contribution.amount, record.target_amount
+    )
+    db.commit()
+    db.refresh(record)
+    return record
+
+
+@app.post("/savings-goals/{goal_id}/withdraw", response_model=SavingsGoal)
+def withdraw_from_savings_goal(
+    goal_id: int,
+    contribution: SavingsContribution,
+    db: Session = Depends(get_db),
+    current_user: UserModel = Depends(get_current_user),
+):
+    record = find_goal(db, goal_id, current_user.id)
+    if contribution.amount > record.current_amount:
+        raise HTTPException(
+            status_code=400,
+            detail="Withdrawal cannot exceed the saved amount",
+        )
+    record.current_amount -= contribution.amount
+    db.commit()
+    db.refresh(record)
+    return record
+
+
+@app.delete("/savings-goals/{goal_id}")
+def delete_savings_goal(
+    goal_id: int,
+    db: Session = Depends(get_db),
+    current_user: UserModel = Depends(get_current_user),
+):
+    record = find_goal(db, goal_id, current_user.id)
+    db.delete(record)
+    db.commit()
+    return {"message": "Savings goal deleted successfully", "id": goal_id}
+
+
+@app.get("/ai/insights")
+def get_financial_insights(
+    db: Session = Depends(get_db),
+    current_user: UserModel = Depends(get_current_user),
+):
+    transactions = (
+        db.query(TransactionModel)
+        .filter(TransactionModel.user_id == current_user.id)
+        .order_by(TransactionModel.transaction_date.desc())
+        .all()
+    )
+    if not transactions:
+        return {
+            "insight": "Add some transactions to receive AI-powered financial insights."
+        }
+    summary = "\n".join(
+        f"{item.transaction_date} | {item.transaction_type} | "
+        f"{item.category} | {item.description} | ${item.amount:.2f}"
+        for item in transactions
+    )
     prompt = f"""
 You are a helpful personal finance analysis assistant.
 
 Review the following transaction history:
 
-{transaction_summary}
+{summary}
 
 Provide a concise financial analysis that includes:
 1. The biggest spending categories.
@@ -299,419 +600,13 @@ Provide a concise financial analysis that includes:
 Do not provide tax, legal, investment, or credit advice.
 Keep the response clear and practical.
 """
-
     try:
-        response = client.responses.create(
-            model="gpt-5.5",
-            input=prompt,
-        )
-
-        return {
-            "insight": response.output_text,
-        }
-
+        response = client.responses.create(model="gpt-5.5", input=prompt)
+        return {"insight": response.output_text}
     except Exception as exc:
         raise HTTPException(
             status_code=500,
             detail=f"Unable to generate AI insights: {str(exc)}",
         ) from exc
 
-@app.post(
-    "/recurring-transactions",
-    response_model=RecurringTransaction,
-    status_code=201,
-)
-def create_recurring_transaction(
-    recurring_transaction: RecurringTransactionCreate,
-    db: Session = Depends(get_db),
-):
-    new_recurring_transaction = RecurringTransactionModel(
-        description=recurring_transaction.description,
-        amount=recurring_transaction.amount,
-        category=recurring_transaction.category,
-        transaction_type=recurring_transaction.transaction_type.value,
-        frequency=recurring_transaction.frequency.value,
-        next_due_date=recurring_transaction.next_due_date,
-        is_active=recurring_transaction.is_active,
-    )
-
-    db.add(new_recurring_transaction)
-    db.commit()
-    db.refresh(new_recurring_transaction)
-
-    return new_recurring_transaction
-
-
-@app.get(
-    "/recurring-transactions",
-    response_model=list[RecurringTransaction],
-)
-def get_recurring_transactions(
-    db: Session = Depends(get_db),
-):
-    return (
-        db.query(RecurringTransactionModel)
-        .order_by(RecurringTransactionModel.next_due_date.asc())
-        .all()
-    )
-
-
-@app.put(
-    "/recurring-transactions/{recurring_transaction_id}",
-    response_model=RecurringTransaction,
-)
-def update_recurring_transaction(
-    recurring_transaction_id: int,
-    recurring_transaction: RecurringTransactionCreate,
-    db: Session = Depends(get_db),
-):
-    existing = (
-        db.query(RecurringTransactionModel)
-        .filter(
-            RecurringTransactionModel.id
-            == recurring_transaction_id
-        )
-        .first()
-    )
-
-    if existing is None:
-        raise HTTPException(
-            status_code=404,
-            detail="Recurring transaction not found",
-        )
-
-    existing.description = recurring_transaction.description
-    existing.amount = recurring_transaction.amount
-    existing.category = recurring_transaction.category
-    existing.transaction_type = (
-        recurring_transaction.transaction_type.value
-    )
-    existing.frequency = recurring_transaction.frequency.value
-    existing.next_due_date = recurring_transaction.next_due_date
-    existing.is_active = recurring_transaction.is_active
-
-    db.commit()
-    db.refresh(existing)
-
-    return existing
-
-
-@app.delete(
-    "/recurring-transactions/{recurring_transaction_id}"
-)
-def delete_recurring_transaction(
-    recurring_transaction_id: int,
-    db: Session = Depends(get_db),
-):
-    recurring_transaction = (
-        db.query(RecurringTransactionModel)
-        .filter(
-            RecurringTransactionModel.id
-            == recurring_transaction_id
-        )
-        .first()
-    )
-
-    if recurring_transaction is None:
-        raise HTTPException(
-            status_code=404,
-            detail="Recurring transaction not found",
-        )
-
-    db.delete(recurring_transaction)
-    db.commit()
-
-    return {
-        "message": "Recurring transaction deleted successfully",
-        "id": recurring_transaction_id,
-    }
-
-
-@app.get("/cash-flow/forecast")
-def get_cash_flow_forecast(
-    db: Session = Depends(get_db),
-):
-    transactions = db.query(TransactionModel).all()
-    recurring_transactions = (
-        db.query(RecurringTransactionModel)
-        .filter(RecurringTransactionModel.is_active.is_(True))
-        .all()
-    )
-
-    current_balance = sum(
-        transaction.amount
-        if transaction.transaction_type == "income"
-        else -transaction.amount
-        for transaction in transactions
-    )
-
-    frequency_multipliers = {
-        "weekly": 52 / 12,
-        "biweekly": 26 / 12,
-        "monthly": 1,
-        "yearly": 1 / 12,
-    }
-
-    projected_income = 0.0
-    projected_expenses = 0.0
-
-    for recurring_transaction in recurring_transactions:
-        monthly_amount = (
-            recurring_transaction.amount
-            * frequency_multipliers.get(
-                recurring_transaction.frequency,
-                1,
-            )
-        )
-
-        if recurring_transaction.transaction_type == "income":
-            projected_income += monthly_amount
-        else:
-            projected_expenses += monthly_amount
-
-    projected_net_cash_flow = (
-        projected_income - projected_expenses
-    )
-    projected_ending_balance = (
-        current_balance + projected_net_cash_flow
-    )
-
-    return {
-        "current_balance": round(current_balance, 2),
-        "projected_monthly_income": round(
-            projected_income,
-            2,
-        ),
-        "projected_monthly_expenses": round(
-            projected_expenses,
-            2,
-        ),
-        "projected_net_cash_flow": round(
-            projected_net_cash_flow,
-            2,
-        ),
-        "projected_ending_balance": round(
-            projected_ending_balance,
-            2,
-        ),
-        "active_recurring_transactions": len(
-            recurring_transactions
-        ),
-    }
-
-@app.put(
-    "/budgets/{budget_id}",
-    response_model=Budget,
-)
-def update_budget(
-    budget_id: int,
-    budget: BudgetCreate,
-    db: Session = Depends(get_db),
-):
-    existing_budget = (
-        db.query(BudgetModel)
-        .filter(BudgetModel.id == budget_id)
-        .first()
-    )
-
-    if existing_budget is None:
-        raise HTTPException(
-            status_code=404,
-            detail="Budget not found",
-        )
-
-    duplicate_budget = (
-        db.query(BudgetModel)
-        .filter(
-            BudgetModel.category == budget.category,
-            BudgetModel.id != budget_id,
-        )
-        .first()
-    )
-
-    if duplicate_budget is not None:
-        raise HTTPException(
-            status_code=409,
-            detail="A budget already exists for this category",
-        )
-
-    existing_budget.category = budget.category
-    existing_budget.monthly_limit = budget.monthly_limit
-
-    db.commit()
-    db.refresh(existing_budget)
-
-    return existing_budget
-
-
-@app.delete("/budgets/{budget_id}")
-def delete_budget(
-    budget_id: int,
-    db: Session = Depends(get_db),
-):
-    budget = (
-        db.query(BudgetModel)
-        .filter(BudgetModel.id == budget_id)
-        .first()
-    )
-
-    if budget is None:
-        raise HTTPException(
-            status_code=404,
-            detail="Budget not found",
-        )
-
-    db.delete(budget)
-    db.commit()
-
-    return {
-        "message": "Budget deleted successfully",
-        "id": budget_id,
-    }
-
-
-@app.post(
-    "/savings-goals",
-    response_model=SavingsGoal,
-    status_code=201,
-)
-def create_savings_goal(
-    goal: SavingsGoalCreate,
-    db: Session = Depends(get_db),
-):
-    if goal.current_amount > goal.target_amount:
-        raise HTTPException(
-            status_code=400,
-            detail="Current amount cannot exceed the target amount",
-        )
-
-    new_goal = SavingsGoalModel(
-        name=goal.name,
-        target_amount=goal.target_amount,
-        current_amount=goal.current_amount,
-        target_date=goal.target_date,
-    )
-    db.add(new_goal)
-    db.commit()
-    db.refresh(new_goal)
-    return new_goal
-
-
-@app.get(
-    "/savings-goals",
-    response_model=list[SavingsGoal],
-)
-def get_savings_goals(
-    db: Session = Depends(get_db),
-):
-    return db.query(SavingsGoalModel).order_by(SavingsGoalModel.id.desc()).all()
-
-
-@app.put(
-    "/savings-goals/{goal_id}",
-    response_model=SavingsGoal,
-)
-def update_savings_goal(
-    goal_id: int,
-    goal: SavingsGoalCreate,
-    db: Session = Depends(get_db),
-):
-    existing_goal = (
-        db.query(SavingsGoalModel)
-        .filter(SavingsGoalModel.id == goal_id)
-        .first()
-    )
-
-    if existing_goal is None:
-        raise HTTPException(status_code=404, detail="Savings goal not found")
-
-    if goal.current_amount > goal.target_amount:
-        raise HTTPException(
-            status_code=400,
-            detail="Current amount cannot exceed the target amount",
-        )
-
-    existing_goal.name = goal.name
-    existing_goal.target_amount = goal.target_amount
-    existing_goal.current_amount = goal.current_amount
-    existing_goal.target_date = goal.target_date
-    db.commit()
-    db.refresh(existing_goal)
-    return existing_goal
-
-
-@app.post(
-    "/savings-goals/{goal_id}/contribute",
-    response_model=SavingsGoal,
-)
-def contribute_to_savings_goal(
-    goal_id: int,
-    contribution: SavingsContribution,
-    db: Session = Depends(get_db),
-):
-    goal = (
-        db.query(SavingsGoalModel)
-        .filter(SavingsGoalModel.id == goal_id)
-        .first()
-    )
-
-    if goal is None:
-        raise HTTPException(status_code=404, detail="Savings goal not found")
-
-    goal.current_amount = min(
-        goal.current_amount + contribution.amount,
-        goal.target_amount,
-    )
-    db.commit()
-    db.refresh(goal)
-    return goal
-
-
-@app.post(
-    "/savings-goals/{goal_id}/withdraw",
-    response_model=SavingsGoal,
-)
-def withdraw_from_savings_goal(
-    goal_id: int,
-    contribution: SavingsContribution,
-    db: Session = Depends(get_db),
-):
-    goal = (
-        db.query(SavingsGoalModel)
-        .filter(SavingsGoalModel.id == goal_id)
-        .first()
-    )
-
-    if goal is None:
-        raise HTTPException(status_code=404, detail="Savings goal not found")
-
-    if contribution.amount > goal.current_amount:
-        raise HTTPException(
-            status_code=400,
-            detail="Withdrawal cannot exceed the saved amount",
-        )
-
-    goal.current_amount -= contribution.amount
-    db.commit()
-    db.refresh(goal)
-    return goal
-
-
-@app.delete("/savings-goals/{goal_id}")
-def delete_savings_goal(
-    goal_id: int,
-    db: Session = Depends(get_db),
-):
-    goal = (
-        db.query(SavingsGoalModel)
-        .filter(SavingsGoalModel.id == goal_id)
-        .first()
-    )
-
-    if goal is None:
-        raise HTTPException(status_code=404, detail="Savings goal not found")
-
-    db.delete(goal)
-    db.commit()
-    return {"message": "Savings goal deleted successfully", "id": goal_id}
 

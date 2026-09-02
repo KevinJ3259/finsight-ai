@@ -100,6 +100,37 @@ interface SavingsGoalForm {
   target_date: string;
 }
 
+interface AuthUser {
+  id: number;
+  name: string;
+  email: string;
+}
+
+interface AuthResponse {
+  access_token: string;
+  token_type: string;
+  user: AuthUser;
+}
+
+async function apiFetch(input: RequestInfo | URL, init: RequestInit = {}) {
+  const token = localStorage.getItem("finsight_token");
+  const headers = new Headers(init.headers);
+
+  if (token) {
+    headers.set("Authorization", `Bearer ${token}`);
+  }
+
+  const response = await fetch(input, { ...init, headers });
+
+  if (response.status === 401 || response.status === 403) {
+    localStorage.removeItem("finsight_token");
+    localStorage.removeItem("finsight_user");
+    window.dispatchEvent(new Event("finsight-auth-expired"));
+  }
+
+  return response;
+}
+
 const emptyForm: TransactionForm = {
   description: "",
   amount: "",
@@ -196,6 +227,24 @@ function parseCsvRow(row: string) {
 }
 
 function App() {
+  const [token, setToken] = useState(
+    () => localStorage.getItem("finsight_token") || "",
+  );
+  const [currentUser, setCurrentUser] = useState<AuthUser | null>(() => {
+    const savedUser = localStorage.getItem("finsight_user");
+    if (!savedUser) return null;
+    try {
+      return JSON.parse(savedUser) as AuthUser;
+    } catch {
+      return null;
+    }
+  });
+  const [authMode, setAuthMode] = useState<"login" | "register">("login");
+  const [authName, setAuthName] = useState("");
+  const [authEmail, setAuthEmail] = useState("");
+  const [authPassword, setAuthPassword] = useState("");
+  const [authError, setAuthError] = useState("");
+  const [authLoading, setAuthLoading] = useState(false);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [form, setForm] = useState<TransactionForm>(emptyForm);
   const [error, setError] = useState("");
@@ -371,9 +420,81 @@ function App() {
       };
     });
 
+  async function submitAuthentication(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setAuthError("");
+
+    if (!authEmail.trim() || !authPassword) {
+      setAuthError("Enter your email and password.");
+      return;
+    }
+
+    if (authMode === "register" && !authName.trim()) {
+      setAuthError("Enter your name.");
+      return;
+    }
+
+    if (authMode === "register" && authPassword.length < 8) {
+      setAuthError("Password must contain at least 8 characters.");
+      return;
+    }
+
+    setAuthLoading(true);
+
+    try {
+      const response = await fetch(`${API_URL}/auth/${authMode}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(
+          authMode === "register"
+            ? {
+                name: authName.trim(),
+                email: authEmail.trim(),
+                password: authPassword,
+              }
+            : {
+                email: authEmail.trim(),
+                password: authPassword,
+              },
+        ),
+      });
+
+      const data = await response.json().catch(() => null);
+      if (!response.ok) {
+        throw new Error(data?.detail || "Unable to authenticate.");
+      }
+
+      const authData = data as AuthResponse;
+      localStorage.setItem("finsight_token", authData.access_token);
+      localStorage.setItem("finsight_user", JSON.stringify(authData.user));
+      setCurrentUser(authData.user);
+      setToken(authData.access_token);
+      setAuthPassword("");
+    } catch (err) {
+      setAuthError(
+        err instanceof Error ? err.message : "Unable to authenticate.",
+      );
+    } finally {
+      setAuthLoading(false);
+    }
+  }
+
+  function logOut() {
+    localStorage.removeItem("finsight_token");
+    localStorage.removeItem("finsight_user");
+    setToken("");
+    setCurrentUser(null);
+    setTransactions([]);
+    setBudgets([]);
+    setRecurringTransactions([]);
+    setSavingsGoals([]);
+    setForecast(null);
+    setAiInsight("");
+  }
+
   async function loadTransactions() {
     try {
-      const response = await fetch(`${API_URL}/transactions`);
+      const response = await apiFetch(`${API_URL}/transactions`);
 
       if (!response.ok) {
         throw new Error("Unable to load transactions.");
@@ -390,7 +511,7 @@ function App() {
 
   async function loadRecurringTransactions() {
     try {
-      const response = await fetch(`${API_URL}/recurring-transactions`);
+      const response = await apiFetch(`${API_URL}/recurring-transactions`);
 
       if (!response.ok) {
         throw new Error("Unable to load recurring transactions.");
@@ -409,7 +530,7 @@ function App() {
 
   async function loadForecast() {
     try {
-      const response = await fetch(`${API_URL}/cash-flow/forecast`);
+      const response = await apiFetch(`${API_URL}/cash-flow/forecast`);
 
       if (!response.ok) {
         throw new Error("Unable to load cash-flow forecast.");
@@ -428,7 +549,7 @@ function App() {
 
   async function loadBudgets() {
     try {
-      const response = await fetch(`${API_URL}/budgets`);
+      const response = await apiFetch(`${API_URL}/budgets`);
 
       if (!response.ok) {
         throw new Error("Unable to load budgets.");
@@ -445,7 +566,7 @@ function App() {
 
   async function loadSavingsGoals() {
     try {
-      const response = await fetch(`${API_URL}/savings-goals`);
+      const response = await apiFetch(`${API_URL}/savings-goals`);
 
       if (!response.ok) {
         throw new Error("Unable to load savings goals.");
@@ -461,12 +582,28 @@ function App() {
   }
 
   useEffect(() => {
-    loadTransactions();
-    loadRecurringTransactions();
-    loadForecast();
-    loadBudgets();
-    loadSavingsGoals();
+    const handleExpiredSession = () => {
+      setToken("");
+      setCurrentUser(null);
+      setAuthError("Your session expired. Please log in again.");
+    };
+
+    window.addEventListener("finsight-auth-expired", handleExpiredSession);
+    return () => {
+      window.removeEventListener("finsight-auth-expired", handleExpiredSession);
+    };
   }, []);
+
+  useEffect(() => {
+    if (!token) return;
+    void Promise.all([
+      loadTransactions(),
+      loadRecurringTransactions(),
+      loadForecast(),
+      loadBudgets(),
+      loadSavingsGoals(),
+    ]);
+  }, [token]);
 
   async function saveSavingsGoal(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -500,7 +637,7 @@ function App() {
         savingsGoalEditingId === null
           ? `${API_URL}/savings-goals`
           : `${API_URL}/savings-goals/${savingsGoalEditingId}`;
-      const response = await fetch(url, {
+      const response = await apiFetch(url, {
         method: savingsGoalEditingId === null ? "POST" : "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -559,7 +696,7 @@ function App() {
     setSavingsGoalError("");
 
     try {
-      const response = await fetch(
+      const response = await apiFetch(
         `${API_URL}/savings-goals/${goalId}/${action}`,
         {
           method: "POST",
@@ -593,7 +730,7 @@ function App() {
     setSavingsGoalError("");
 
     try {
-      const response = await fetch(`${API_URL}/savings-goals/${id}`, {
+      const response = await apiFetch(`${API_URL}/savings-goals/${id}`, {
         method: "DELETE",
       });
 
@@ -712,7 +849,7 @@ function App() {
           );
         }
 
-        const response = await fetch(`${API_URL}/transactions`, {
+        const response = await apiFetch(`${API_URL}/transactions`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -767,7 +904,7 @@ function App() {
         budgetEditingId === null
           ? `${API_URL}/budgets`
           : `${API_URL}/budgets/${budgetEditingId}`;
-      const response = await fetch(url, {
+      const response = await apiFetch(url, {
         method: budgetEditingId === null ? "POST" : "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -816,7 +953,7 @@ function App() {
     setBudgetError("");
 
     try {
-      const response = await fetch(`${API_URL}/budgets/${id}`, {
+      const response = await apiFetch(`${API_URL}/budgets/${id}`, {
         method: "DELETE",
       });
 
@@ -859,7 +996,7 @@ function App() {
     setRecurringLoading(true);
 
     try {
-      const response = await fetch(`${API_URL}/recurring-transactions`, {
+      const response = await apiFetch(`${API_URL}/recurring-transactions`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -899,7 +1036,7 @@ function App() {
     setRecurringError("");
 
     try {
-      const response = await fetch(`${API_URL}/recurring-transactions/${id}`, {
+      const response = await apiFetch(`${API_URL}/recurring-transactions/${id}`, {
         method: "DELETE",
       });
 
@@ -941,7 +1078,7 @@ function App() {
           ? `${API_URL}/transactions/${editingId}`
           : `${API_URL}/transactions`;
 
-      const response = await fetch(url, {
+      const response = await apiFetch(url, {
         method: editingId !== null ? "PUT" : "POST",
         headers: {
           "Content-Type": "application/json",
@@ -990,7 +1127,7 @@ function App() {
     setError("");
 
     try {
-      const response = await fetch(`${API_URL}/transactions/${id}`, {
+      const response = await apiFetch(`${API_URL}/transactions/${id}`, {
         method: "DELETE",
       });
 
@@ -1043,7 +1180,7 @@ function App() {
     setAiError("");
 
     try {
-      const response = await fetch(`${API_URL}/ai/insights`);
+      const response = await apiFetch(`${API_URL}/ai/insights`);
 
       if (!response.ok) {
         throw new Error("Unable to generate AI insights.");
@@ -1060,6 +1197,112 @@ function App() {
     }
   }
 
+  if (!token || !currentUser) {
+    return (
+      <div className="app">
+        <main
+          className="dashboard"
+          style={{
+            minHeight: "100vh",
+            display: "grid",
+            placeItems: "center",
+            padding: "32px 20px",
+          }}
+        >
+          <section
+            className="panel"
+            style={{ width: "100%", maxWidth: "520px", padding: "32px" }}
+          >
+            <p className="eyebrow">PERSONAL FINANCE TRACKER</p>
+            <h1 style={{ marginBottom: "8px" }}>FinSight AI</h1>
+            <p className="subtitle" style={{ marginBottom: "28px" }}>
+              {authMode === "login"
+                ? "Log in to access your private financial dashboard."
+                : "Create an account to start managing your finances."}
+            </p>
+
+            <form onSubmit={submitAuthentication}>
+              {authMode === "register" && (
+                <label style={{ display: "block", marginBottom: "16px" }}>
+                  Name
+                  <input
+                    type="text"
+                    value={authName}
+                    onChange={(event) => setAuthName(event.target.value)}
+                    autoComplete="name"
+                    maxLength={100}
+                    required
+                    style={{ width: "100%", marginTop: "6px" }}
+                  />
+                </label>
+              )}
+
+              <label style={{ display: "block", marginBottom: "16px" }}>
+                Email
+                <input
+                  type="email"
+                  value={authEmail}
+                  onChange={(event) => setAuthEmail(event.target.value)}
+                  autoComplete="email"
+                  required
+                  style={{ width: "100%", marginTop: "6px" }}
+                />
+              </label>
+
+              <label style={{ display: "block", marginBottom: "20px" }}>
+                Password
+                <input
+                  type="password"
+                  value={authPassword}
+                  onChange={(event) => setAuthPassword(event.target.value)}
+                  autoComplete={
+                    authMode === "login" ? "current-password" : "new-password"
+                  }
+                  minLength={authMode === "register" ? 8 : undefined}
+                  required
+                  style={{ width: "100%", marginTop: "6px" }}
+                />
+              </label>
+
+              {authError && <p className="error-message">{authError}</p>}
+
+              <button type="submit" disabled={authLoading}>
+                {authLoading
+                  ? "Please wait..."
+                  : authMode === "login"
+                    ? "Log In"
+                    : "Create Account"}
+              </button>
+            </form>
+
+            <p style={{ marginTop: "22px" }}>
+              {authMode === "login"
+                ? "Need an account? "
+                : "Already have an account? "}
+              <button
+                type="button"
+                onClick={() => {
+                  setAuthMode(authMode === "login" ? "register" : "login");
+                  setAuthError("");
+                  setAuthPassword("");
+                }}
+                style={{
+                  border: 0,
+                  padding: 0,
+                  background: "transparent",
+                  color: "#60a5fa",
+                  textDecoration: "underline",
+                }}
+              >
+                {authMode === "login" ? "Create one" : "Log in"}
+              </button>
+            </p>
+          </section>
+        </main>
+      </div>
+    );
+  }
+
   return (
     <div className="app">
       <header className="header">
@@ -1071,6 +1314,13 @@ function App() {
           <p className="subtitle">
             Understand your money. Make smarter financial decisions.
           </p>
+        </div>
+
+        <div style={{ textAlign: "right" }}>
+          <p style={{ margin: "0 0 8px" }}>Signed in as {currentUser.name}</p>
+          <button type="button" onClick={logOut}>
+            Log Out
+          </button>
         </div>
       </header>
 
@@ -2166,3 +2416,4 @@ function App() {
 }
 
 export default App;
+

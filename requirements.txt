@@ -5,3 +5,6 @@ pydantic
 openai
 python-dotenv
 psycopg2-binary
+PyJWT
+pwdlib[argon2]
+email-validator
